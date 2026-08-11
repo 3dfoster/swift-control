@@ -44,6 +44,7 @@ namespace SwiftControl
         private bool _allowClose;
         private bool _suppressControlEvents;
         private bool _trayActionPending;
+        private bool _positioning;
 
         public event Action<int> PowerModeObserved;
         public event Action<bool> ChargingLimitObserved;
@@ -71,6 +72,7 @@ namespace SwiftControl
 
             Content = BuildLayout();
             Loaded += OnLoaded;
+            SizeChanged += PanelSizeChanged;
             IsVisibleChanged += VisibilityChanged;
             Deactivated += PanelDeactivated;
             KeyDown += delegate(object sender, KeyEventArgs e)
@@ -90,7 +92,7 @@ namespace SwiftControl
             Grid root = new Grid();
             root.Margin = new Thickness(20, 16, 20, 15);
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             shell.Child = root;
 
             Grid heading = new Grid();
@@ -256,6 +258,14 @@ namespace SwiftControl
             _modePoll.Start();
         }
 
+        private void PanelSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            // SizeToContent can change the panel after refreshed controls are
+            // populated. Keep its bottom edge anchored instead of allowing the
+            // newly added content to grow below the screen.
+            if (IsVisible && !_positioning) PositionBottomRight();
+        }
+
         public void StartHidden()
         {
             RefreshStartupDisplay();
@@ -350,9 +360,26 @@ namespace SwiftControl
             const double edgePadding = 12;
             const double autoHideTaskbarReserve = 64;
             Rect area = SystemParameters.WorkArea;
-            Width = Math.Round(area.Width * 0.5);
-            Left = area.Right - Width - edgePadding;
-            Top = area.Bottom - ActualHeight - edgePadding - autoHideTaskbarReserve;
+
+            _positioning = true;
+            try
+            {
+                // WPF reports the work area in device-independent units, so
+                // these bounds also adapt when Windows display scaling changes.
+                Width = Math.Max(MinWidth,
+                    Math.Min(Math.Round(area.Width * 0.5), area.Width - (edgePadding * 2)));
+                MaxHeight = Math.Max(MinHeight,
+                    area.Height - (edgePadding * 2) - autoHideTaskbarReserve);
+
+                Left = Math.Max(area.Left + edgePadding,
+                    area.Right - ActualWidth - edgePadding);
+                Top = Math.Max(area.Top + edgePadding,
+                    area.Bottom - ActualHeight - edgePadding - autoHideTaskbarReserve);
+            }
+            finally
+            {
+                _positioning = false;
+            }
         }
 
         private async void RefreshClicked(object sender, RoutedEventArgs e)
