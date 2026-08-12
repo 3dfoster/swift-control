@@ -4,12 +4,14 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -21,6 +23,12 @@ namespace SwiftControl
     {
         private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string StartupRegistryValue = "SwiftControl";
+        private const int MonitorDefaultToNearest = 2;
+        private const int WmSettingChange = 0x001A;
+        private const int WmDisplayChange = 0x007E;
+        private const int WmDpiChanged = 0x02E0;
+        private const uint SwpNoZOrder = 0x0004;
+        private const uint SwpNoActivate = 0x0010;
 
         private readonly Brush _background = Brush("#0B0E14");
         private readonly Brush _card = Brush("#151A22");
@@ -52,6 +60,7 @@ namespace SwiftControl
         private TextBlock _lowBatteryPercentLabel;
         private TextBlock _automationStatus;
         private Button _resumeAutomation;
+        private Button _closeAcerSense;
         private readonly PowerAutomationSettings _automationSettings;
         private int _currentPowerMode = -1;
         private int _currentWindowsPowerMode = -1;
@@ -62,8 +71,8 @@ namespace SwiftControl
         private bool _conditionDragCompleted;
         private bool _onAcPower;
         private bool _optimizedCharging;
-        private Button _refresh;
         private readonly DispatcherTimer _modePoll;
+        private readonly DispatcherTimer _dashboardPoll;
         private bool _loading;
         private bool _pollingMode;
         private bool _allowClose;
@@ -72,6 +81,8 @@ namespace SwiftControl
         private bool _positioning;
         private bool _automationApplying;
         private bool _changingWindowsPowerMode;
+        private IntPtr _targetMonitor;
+        private HwndSource _windowSource;
 
         public event Action<int> PowerModeObserved;
         public event Action<int> PowerProfileObserved;
@@ -99,9 +110,14 @@ namespace SwiftControl
             _modePoll.Interval = TimeSpan.FromSeconds(30);
             _modePoll.Tick += ModePollTick;
 
+            _dashboardPoll = new DispatcherTimer();
+            _dashboardPoll.Interval = TimeSpan.FromSeconds(30);
+            _dashboardPoll.Tick += DashboardPollTick;
+
             Content = BuildLayout();
             Loaded += OnLoaded;
             SizeChanged += PanelSizeChanged;
+            LocationChanged += PanelLocationChanged;
             IsVisibleChanged += VisibilityChanged;
             Deactivated += PanelDeactivated;
             SystemEvents.PowerModeChanged += SystemPowerModeChanged;
@@ -188,23 +204,6 @@ namespace SwiftControl
             acerSense.Content = acerIcon;
             acerSense.Click += AcerSenseClicked;
             actions.Children.Add(acerSense);
-            _refresh = Button("");
-            _refresh.Width = 34;
-            _refresh.Height = 34;
-            _refresh.Padding = new Thickness(0);
-            _refresh.Background = Brushes.Transparent;
-            _refresh.BorderBrush = Brushes.Transparent;
-            _refresh.BorderThickness = new Thickness(0);
-            _refresh.Cursor = Cursors.Hand;
-            _refresh.ToolTip = "Refresh";
-            AutomationProperties.SetName(_refresh, "Refresh");
-            _refresh.Template = iconOnly;
-            TextBlock refreshIcon = Text("↻", 22, FontWeights.Normal, _text);
-            refreshIcon.FontFamily = new FontFamily("Segoe UI Symbol");
-            refreshIcon.Margin = new Thickness(0, -2, 0, 0);
-            _refresh.Content = refreshIcon;
-            _refresh.Click += RefreshClicked;
-            actions.Children.Add(_refresh);
             Grid.SetColumn(actions, 1);
             heading.Children.Add(actions);
             root.Children.Add(heading);
@@ -428,11 +427,16 @@ namespace SwiftControl
             _automationStatusRow.Children.Add(_resumeAutomation);
             battery.Children.Add(_automationStatusRow);
 
+            Grid advancedActions = new Grid();
+            advancedActions.Margin = new Thickness(0, 10, 0, 0);
+            advancedActions.ColumnDefinitions.Add(new ColumnDefinition());
+            advancedActions.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+
             _advancedToggle = new ToggleButton();
             _advancedToggle.Content = "Advanced controls  ▾";
             _advancedToggle.Height = 30;
             _advancedToggle.HorizontalAlignment = HorizontalAlignment.Left;
-            _advancedToggle.Margin = new Thickness(0, 10, 0, 0);
             _advancedToggle.Padding = new Thickness(10, 0, 10, 1);
             _advancedToggle.FontSize = 11;
             _advancedToggle.FontWeight = FontWeights.SemiBold;
@@ -443,7 +447,26 @@ namespace SwiftControl
             _advancedToggle.Cursor = Cursors.Hand;
             _advancedToggle.Template = CreateToggleButtonTemplate(9);
             _advancedToggle.Click += AdvancedToggleClicked;
-            battery.Children.Add(_advancedToggle);
+            advancedActions.Children.Add(_advancedToggle);
+
+            _closeAcerSense = Button("Close AcerSense");
+            _closeAcerSense.Height = 30;
+            _closeAcerSense.Padding = new Thickness(11, 0, 11, 1);
+            _closeAcerSense.Margin = new Thickness(10, 0, 0, 0);
+            _closeAcerSense.HorizontalAlignment = HorizontalAlignment.Right;
+            _closeAcerSense.FontSize = 11;
+            _closeAcerSense.FontWeight = FontWeights.SemiBold;
+            _closeAcerSense.Background = Brush("#3A2028");
+            _closeAcerSense.BorderBrush = Brush("#79404C");
+            _closeAcerSense.Cursor = Cursors.Hand;
+            _closeAcerSense.ToolTip =
+                "Force-close the AcerSense UI without stopping Acer background services";
+            AutomationProperties.SetName(_closeAcerSense, "Close AcerSense");
+            _closeAcerSense.Visibility = Visibility.Collapsed;
+            _closeAcerSense.Click += CloseAcerSenseClicked;
+            Grid.SetColumn(_closeAcerSense, 1);
+            advancedActions.Children.Add(_closeAcerSense);
+            battery.Children.Add(advancedActions);
 
             _advancedPanel = new StackPanel();
             _advancedPanel.Visibility = Visibility.Collapsed;
@@ -582,13 +605,16 @@ namespace SwiftControl
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
+            SelectMonitorAtCursor();
             UpdateLayout();
             PositionBottomRight();
             RefreshStartupDisplay();
             await RefreshAsync();
             await RefreshWindowsPowerModeAsync(true);
             await EvaluateAutomationAsync(true, true);
+            UpdateAcerSenseCloseButton();
             _modePoll.Start();
+            _dashboardPoll.Start();
         }
 
         private void PanelSizeChanged(object sender, SizeChangedEventArgs e)
@@ -597,6 +623,14 @@ namespace SwiftControl
             // populated. Keep its bottom edge anchored instead of allowing the
             // newly added content to grow below the screen.
             if (IsVisible && !_positioning) PositionBottomRight();
+        }
+
+        private void PanelLocationChanged(object sender, EventArgs e)
+        {
+            if (_positioning) return;
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
+                _targetMonitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
         }
 
         public void StartHidden()
@@ -613,18 +647,31 @@ namespace SwiftControl
             {
                 _modePoll.Interval = TimeSpan.FromSeconds(2);
                 _modePoll.Start();
-                if (IsLoaded) await RefreshPowerModeAsync();
+                _dashboardPoll.Start();
+                if (IsLoaded)
+                {
+                    UpdateAcerSenseCloseButton();
+                    await RefreshAsync(false, false);
+                    await RefreshPowerModeAsync();
+                }
             }
             else
             {
                 _modePoll.Interval = TimeSpan.FromSeconds(30);
                 if (IsLoaded) _modePoll.Start();
+                _dashboardPoll.Stop();
             }
         }
 
         private async void ModePollTick(object sender, EventArgs e)
         {
+            UpdateAcerSenseCloseButton();
             await RefreshPowerModeAsync();
+        }
+
+        private async void DashboardPollTick(object sender, EventArgs e)
+        {
+            if (IsVisible) await RefreshAsync(false, false);
         }
 
         private async Task RefreshPowerModeAsync()
@@ -675,6 +722,7 @@ namespace SwiftControl
 
         public void ShowFromTray()
         {
+            SelectMonitorAtCursor();
             if (!IsVisible) Show();
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             UpdateLayout();
@@ -706,31 +754,106 @@ namespace SwiftControl
                 return;
             }
             _modePoll.Stop();
+            _dashboardPoll.Stop();
             SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
             base.OnClosing(e);
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            _windowSource = PresentationSource.FromVisual(this) as HwndSource;
+            if (_windowSource != null) _windowSource.AddHook(WindowMessageHook);
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            if (_windowSource != null)
+            {
+                _windowSource.RemoveHook(WindowMessageHook);
+                _windowSource = null;
+            }
+            base.OnClosed(e);
+        }
+
+        private IntPtr WindowMessageHook(IntPtr window, int message,
+            IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (message == WmDpiChanged)
+            {
+                _targetMonitor = MonitorFromWindow(window, MonitorDefaultToNearest);
+                QueueReposition();
+            }
+            else if (message == WmDisplayChange || message == WmSettingChange)
+            {
+                _targetMonitor = MonitorFromWindow(window, MonitorDefaultToNearest);
+                QueueReposition();
+            }
+            return IntPtr.Zero;
+        }
+
+        private void QueueReposition()
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Loaded,
+                new Action(delegate
+                {
+                    if (IsVisible) PositionBottomRight();
+                }));
+        }
+
+        private void SelectMonitorAtCursor()
+        {
+            NativePoint cursor;
+            if (GetCursorPos(out cursor))
+                _targetMonitor = MonitorFromPoint(cursor, MonitorDefaultToNearest);
         }
 
         private void PositionBottomRight()
         {
             const double edgePadding = 12;
-            const double autoHideTaskbarReserve = 64;
-            Rect area = SystemParameters.WorkArea;
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero) return;
+
+            IntPtr monitor = _targetMonitor;
+            if (monitor == IntPtr.Zero)
+                monitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
+
+            MonitorInfo monitorInfo = new MonitorInfo();
+            monitorInfo.Size = Marshal.SizeOf(typeof(MonitorInfo));
+            if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref monitorInfo)) return;
+
+            uint dpi = DpiForMonitor(monitor, handle);
+            double pixelsPerDip = dpi / 96.0;
+            double areaWidth = (monitorInfo.Work.Right - monitorInfo.Work.Left) / pixelsPerDip;
+            double areaHeight = (monitorInfo.Work.Bottom - monitorInfo.Work.Top) / pixelsPerDip;
 
             _positioning = true;
             try
             {
-                // WPF reports the work area in device-independent units, so
-                // these bounds also adapt when Windows display scaling changes.
-                double compactWidth = Math.Min(680, Math.Round(area.Width * 0.46));
+                // Keep the compact flyout proportions on ordinary displays while
+                // retaining the half-screen layout used by the highly scaled TV.
+                double compactWidth = areaWidth <= 1440
+                    ? Math.Round(areaWidth * 0.5)
+                    : 680;
                 Width = Math.Max(MinWidth,
-                    Math.Min(compactWidth, area.Width - (edgePadding * 2)));
+                    Math.Min(compactWidth, areaWidth - (edgePadding * 2)));
                 MaxHeight = Math.Max(MinHeight,
-                    area.Height - (edgePadding * 2) - autoHideTaskbarReserve);
+                    areaHeight - (edgePadding * 2));
 
-                Left = Math.Max(area.Left + edgePadding,
-                    area.Right - ActualWidth - edgePadding);
-                Top = Math.Max(area.Top + edgePadding,
-                    area.Bottom - ActualHeight - edgePadding - autoHideTaskbarReserve);
+                UpdateLayout();
+
+                int width = Math.Max(1, (int)Math.Round(ActualWidth * pixelsPerDip));
+                int height = Math.Max(1, (int)Math.Round(ActualHeight * pixelsPerDip));
+                int padding = Math.Max(1, (int)Math.Round(edgePadding * pixelsPerDip));
+                int left = monitorInfo.Work.Right - width - padding;
+                int top = monitorInfo.Work.Bottom - height - padding;
+
+                // SetWindowPos consumes physical desktop coordinates. This avoids
+                // WPF interpreting Left and Top through the previous monitor's DPI
+                // during a per-monitor scale transition.
+                SetWindowPos(handle, IntPtr.Zero, left, top, width, height,
+                    SwpNoZOrder | SwpNoActivate);
             }
             finally
             {
@@ -738,16 +861,87 @@ namespace SwiftControl
             }
         }
 
-        private async void RefreshClicked(object sender, RoutedEventArgs e)
+        private static uint DpiForMonitor(IntPtr monitor, IntPtr window)
         {
-            await RefreshAsync();
+            try
+            {
+                uint horizontal;
+                uint vertical;
+                if (GetDpiForMonitor(monitor, 0, out horizontal, out vertical) == 0 &&
+                    horizontal > 0)
+                    return horizontal;
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+
+            try
+            {
+                uint dpi = GetDpiForWindow(window);
+                if (dpi > 0) return dpi;
+            }
+            catch (EntryPointNotFoundException) { }
+            return 96;
         }
 
-        private async Task RefreshAsync(bool reportFailure = true)
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct MonitorInfo
+        {
+            public int Size;
+            public NativeRect Monitor;
+            public NativeRect Work;
+            public int Flags;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(
+            NativePoint point, int flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(
+            IntPtr window, int flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern bool GetMonitorInfo(
+            IntPtr monitor, ref MonitorInfo info);
+
+        [DllImport("shcore.dll")]
+        private static extern int GetDpiForMonitor(
+            IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr window);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
+            int x, int y, int width, int height, uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+
+        private async Task RefreshAsync(bool reportFailure = true, bool showBusyState = true)
         {
             if (_loading) return;
             _loading = true;
-            SetControlsEnabled(false);
+            if (showBusyState) SetControlsEnabled(false);
 
             try
             {
@@ -762,7 +956,7 @@ namespace SwiftControl
             finally
             {
                 _loading = false;
-                SetControlsEnabled(true);
+                if (showBusyState) SetControlsEnabled(true);
             }
         }
 
@@ -812,6 +1006,94 @@ namespace SwiftControl
             {
                 ReportFailure("Could not open AcerSense: " + exception.Message);
             }
+        }
+
+        private void UpdateAcerSenseCloseButton()
+        {
+            if (_closeAcerSense == null) return;
+            bool isOpen = false;
+            Process[] processes = Process.GetProcessesByName("AcerSense");
+            try
+            {
+                foreach (Process process in processes)
+                {
+                    try
+                    {
+                        process.Refresh();
+                        if (IsAcerSensePackageProcess(process) &&
+                            process.MainWindowHandle != IntPtr.Zero &&
+                            IsWindowVisible(process.MainWindowHandle))
+                        {
+                            isOpen = true;
+                            break;
+                        }
+                    }
+                    catch (InvalidOperationException) { }
+                    catch (Win32Exception) { }
+                }
+            }
+            finally
+            {
+                foreach (Process process in processes) process.Dispose();
+            }
+            _closeAcerSense.Visibility = isOpen
+                ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void CloseAcerSenseClicked(object sender, RoutedEventArgs e)
+        {
+            _closeAcerSense.IsEnabled = false;
+            int targets = 0;
+            int stopped = 0;
+            Exception failure = null;
+            Process[] processes = Process.GetProcessesByName("AcerSense");
+            try
+            {
+                foreach (Process process in processes)
+                {
+                    try
+                    {
+                        if (!IsAcerSensePackageProcess(process)) continue;
+                        targets++;
+                        if (!process.HasExited)
+                        {
+                            process.Kill();
+                            stopped++;
+                        }
+                    }
+                    catch (InvalidOperationException) { }
+                    catch (Win32Exception exception)
+                    {
+                        failure = exception;
+                    }
+                }
+            }
+            finally
+            {
+                foreach (Process process in processes) process.Dispose();
+            }
+
+            _closeAcerSense.IsEnabled = true;
+            _closeAcerSense.Visibility = Visibility.Collapsed;
+            if (targets > 0 && stopped == 0 && failure != null)
+                ReportFailure("Could not close AcerSense: " + failure.Message);
+        }
+
+        private static bool IsAcerSensePackageProcess(Process process)
+        {
+            try
+            {
+                string path = process.MainModule.FileName;
+                return path != null &&
+                    path.IndexOf(
+                        @"\WindowsApps\ULICTekInc.AcerSense5.0_",
+                        StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    path.EndsWith(
+                        @"\app\AcerSense.exe",
+                        StringComparison.OrdinalIgnoreCase);
+            }
+            catch (InvalidOperationException) { return false; }
+            catch (Win32Exception) { return false; }
         }
 
         private void StartupClicked(object sender, RoutedEventArgs e)
@@ -1743,8 +2025,8 @@ namespace SwiftControl
 
         private void SetControlsEnabled(bool enabled)
         {
-            if (_refresh != null) _refresh.IsEnabled = enabled;
             if (_limit != null) _limit.IsEnabled = enabled;
+            if (_closeAcerSense != null) _closeAcerSense.IsEnabled = enabled;
             if (_advancedToggle != null) _advancedToggle.IsEnabled = enabled;
             if (_automationEnabled != null) _automationEnabled.IsEnabled = enabled;
             if (_lowBatteryThreshold != null) _lowBatteryThreshold.IsEnabled = enabled;
