@@ -26,7 +26,7 @@ namespace SwiftControl
         private readonly Brush _card = Brush("#151A22");
         private readonly Brush _cardBorder = Brush("#252C38");
         private readonly Brush _text = Brush("#F4F6F8");
-        private readonly Brush _muted = Brush("#9AA4B2");
+        private readonly Brush _muted = Brush("#DEE3EA");
         private readonly Brush _accent = Brush("#7DD3A7");
 
         private TextBlock _percent;
@@ -34,8 +34,33 @@ namespace SwiftControl
         private ProgressBar _progress;
         private CheckBox _limit;
         private ToggleButton _startup;
+        private UniformGrid _quickProfiles;
         private UniformGrid _powerModes;
-        private int _currentPowerMode;
+        private UniformGrid _windowsPowerModes;
+        private TextBlock _profileTitle;
+        private TextBlock _profileSummary;
+        private ToggleButton _advancedToggle;
+        private StackPanel _advancedPanel;
+        private TextBlock _acerProfileDescription;
+        private TextBlock _windowsPolicyDescription;
+        private ToggleButton _automationEnabled;
+        private WrapPanel _automationAssignmentRow;
+        private Grid _automationStatusRow;
+        private readonly ToggleButton[] _conditionButtons = new ToggleButton[3];
+        private Border _lowBatteryCondition;
+        private TextBox _lowBatteryThreshold;
+        private TextBlock _lowBatteryPercentLabel;
+        private TextBlock _automationStatus;
+        private Button _resumeAutomation;
+        private readonly PowerAutomationSettings _automationSettings;
+        private int _currentPowerMode = -1;
+        private int _currentWindowsPowerMode = -1;
+        private int _lastAutomationCondition = -1;
+        private int _selectedAutomationCondition = -1;
+        private int _dragCondition = -1;
+        private Point _conditionDragStart;
+        private bool _conditionDragCompleted;
+        private bool _onAcPower;
         private bool _optimizedCharging;
         private Button _refresh;
         private readonly DispatcherTimer _modePoll;
@@ -45,14 +70,18 @@ namespace SwiftControl
         private bool _suppressControlEvents;
         private bool _trayActionPending;
         private bool _positioning;
+        private bool _automationApplying;
+        private bool _changingWindowsPowerMode;
 
         public event Action<int> PowerModeObserved;
+        public event Action<int> PowerProfileObserved;
         public event Action<bool> ChargingLimitObserved;
         public event Action<bool> ChargingLimitChanged;
         public event Action<string> OperationFailed;
 
         public MainWindow()
         {
+            _automationSettings = PowerAutomationSettings.Load();
             Title = "SwiftControl";
             MinWidth = 320;
             MinHeight = 240;
@@ -75,6 +104,7 @@ namespace SwiftControl
             SizeChanged += PanelSizeChanged;
             IsVisibleChanged += VisibilityChanged;
             Deactivated += PanelDeactivated;
+            SystemEvents.PowerModeChanged += SystemPowerModeChanged;
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
                 if (e.Key == Key.Escape) Hide();
@@ -187,6 +217,7 @@ namespace SwiftControl
             root.Children.Add(bodyScroll);
 
             Grid body = new Grid();
+            body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             bodyScroll.Content = body;
 
             Border batteryCard = Card();
@@ -235,18 +266,318 @@ namespace SwiftControl
             _progress.Background = Brush("#28303B");
             battery.Children.Add(_progress);
 
-            TextBlock powerHeading = Text("POWER MODE", 11, FontWeights.SemiBold, _muted);
-            powerHeading.Margin = new Thickness(0, 13, 0, 0);
-            battery.Children.Add(powerHeading);
+            Grid profileHeader = new Grid();
+            profileHeader.Margin = new Thickness(0, 13, 0, 0);
+            profileHeader.ColumnDefinitions.Add(new ColumnDefinition());
+            profileHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock profileHeading = Text("POWER PROFILE", 11, FontWeights.SemiBold, _muted);
+            profileHeading.VerticalAlignment = VerticalAlignment.Center;
+            profileHeader.Children.Add(profileHeading);
+
+            _automationEnabled = new ToggleButton();
+            _automationEnabled.Content = "Auto  ▾";
+            _automationEnabled.Height = 29;
+            _automationEnabled.Padding = new Thickness(10, 0, 10, 1);
+            _automationEnabled.FontSize = 11;
+            _automationEnabled.FontWeight = FontWeights.SemiBold;
+            _automationEnabled.Foreground = _text;
+            _automationEnabled.Background = Brush("#202733");
+            _automationEnabled.BorderBrush = _cardBorder;
+            _automationEnabled.BorderThickness = new Thickness(1);
+            _automationEnabled.Cursor = Cursors.Hand;
+            _automationEnabled.Template = CreateToggleButtonTemplate(9);
+            _automationEnabled.ToolTip = "Apply the assigned profile when power conditions change";
+            _automationEnabled.IsChecked = _automationSettings.Enabled;
+            _automationEnabled.Checked += AutomationEnabledChanged;
+            _automationEnabled.Unchecked += AutomationEnabledChanged;
+            Grid.SetColumn(_automationEnabled, 1);
+            profileHeader.Children.Add(_automationEnabled);
+            battery.Children.Add(profileHeader);
+
+            Grid selectedProfileRow = new Grid();
+            selectedProfileRow.Margin = new Thickness(0, 7, 0, 0);
+            selectedProfileRow.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            selectedProfileRow.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            selectedProfileRow.ColumnDefinitions.Add(new ColumnDefinition { MinWidth = 0 });
+            TextBlock selectedLabel = Text("Selected:", 11, FontWeights.SemiBold, _muted);
+            selectedLabel.VerticalAlignment = VerticalAlignment.Center;
+            selectedProfileRow.Children.Add(selectedLabel);
+
+            _profileTitle = Text("Reading…", 13, FontWeights.SemiBold, _text);
+            _profileTitle.Margin = new Thickness(6, 0, 0, 0);
+            _profileTitle.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(_profileTitle, 1);
+            selectedProfileRow.Children.Add(_profileTitle);
+            _profileSummary = Text("", 11, FontWeights.Normal, _muted);
+            _profileSummary.Margin = new Thickness(12, 0, 0, 0);
+            _profileSummary.VerticalAlignment = VerticalAlignment.Center;
+            _profileSummary.MinWidth = 0;
+            _profileSummary.TextWrapping = TextWrapping.NoWrap;
+            _profileSummary.TextTrimming = TextTrimming.CharacterEllipsis;
+            Grid.SetColumn(_profileSummary, 2);
+            selectedProfileRow.Children.Add(_profileSummary);
+            battery.Children.Add(selectedProfileRow);
+
+            _automationAssignmentRow = new WrapPanel();
+            _automationAssignmentRow.Margin = new Thickness(0, 9, 0, 0);
+            TextBlock assignLabel = Text("ASSIGN", 10, FontWeights.SemiBold, _muted);
+            assignLabel.VerticalAlignment = VerticalAlignment.Center;
+            assignLabel.Margin = new Thickness(0, 0, 7, 0);
+            _automationAssignmentRow.Children.Add(assignLabel);
+            string[] conditionNames = { "Plugged", "Battery" };
+            string[] conditionIcons = { "⚡", "\uE856" };
+            for (int condition = 0; condition < 2; condition++)
+            {
+                ToggleButton button = CreateConditionButton(
+                    condition, conditionIcons[condition], conditionNames[condition]);
+                _conditionButtons[condition] = button;
+                _automationAssignmentRow.Children.Add(button);
+            }
+
+            _lowBatteryCondition = new Border();
+            _lowBatteryCondition.Height = 29;
+            _lowBatteryCondition.Margin = new Thickness(0, 0, 5, 0);
+            _lowBatteryCondition.Background = Brush("#202733");
+            _lowBatteryCondition.BorderBrush = _cardBorder;
+            _lowBatteryCondition.BorderThickness = new Thickness(1);
+            _lowBatteryCondition.CornerRadius = new CornerRadius(9);
+            StackPanel lowBatteryContent = new StackPanel();
+            lowBatteryContent.Orientation = Orientation.Horizontal;
+            ToggleButton lowBatteryButton = CreateConditionButton(2, "\uE851", "Below");
+            lowBatteryButton.Height = 27;
+            lowBatteryButton.Margin = new Thickness(0);
+            lowBatteryButton.Padding = new Thickness(8, 0, 4, 1);
+            lowBatteryButton.Background = Brushes.Transparent;
+            lowBatteryButton.BorderThickness = new Thickness(0);
+            lowBatteryButton.Template = CreateContentOnlyToggleTemplate();
+            _conditionButtons[2] = lowBatteryButton;
+            lowBatteryContent.Children.Add(lowBatteryButton);
+
+            _lowBatteryThreshold = new TextBox();
+            _lowBatteryThreshold.Width = 27;
+            _lowBatteryThreshold.Height = 17;
+            _lowBatteryThreshold.Margin = new Thickness(0, 0, 1, 0);
+            _lowBatteryThreshold.Padding = new Thickness(0);
+            _lowBatteryThreshold.TextAlignment = TextAlignment.Center;
+            _lowBatteryThreshold.VerticalAlignment = VerticalAlignment.Center;
+            _lowBatteryThreshold.VerticalContentAlignment = VerticalAlignment.Center;
+            _lowBatteryThreshold.FontSize = 11;
+            _lowBatteryThreshold.FontWeight = FontWeights.SemiBold;
+            _lowBatteryThreshold.Foreground = _text;
+            _lowBatteryThreshold.Background = Brushes.Transparent;
+            _lowBatteryThreshold.BorderThickness = new Thickness(0);
+            _lowBatteryThreshold.Text = _automationSettings.LowBatteryThreshold
+                .ToString(CultureInfo.InvariantCulture);
+            _lowBatteryThreshold.ToolTip = "Low-battery threshold";
+            AutomationProperties.SetName(_lowBatteryThreshold, "Low-battery percentage");
+            _lowBatteryThreshold.PreviewMouseLeftButtonDown += LowBatteryThresholdMouseDown;
+            _lowBatteryThreshold.LostKeyboardFocus += AutomationThresholdLostFocus;
+            _lowBatteryThreshold.KeyDown += AutomationThresholdKeyDown;
+            lowBatteryContent.Children.Add(_lowBatteryThreshold);
+            _lowBatteryPercentLabel = Text("%", 11, FontWeights.SemiBold, _muted);
+            _lowBatteryPercentLabel.Margin = new Thickness(0, 0, 7, 0);
+            _lowBatteryPercentLabel.VerticalAlignment = VerticalAlignment.Center;
+            lowBatteryContent.Children.Add(_lowBatteryPercentLabel);
+            _lowBatteryCondition.Child = lowBatteryContent;
+            _automationAssignmentRow.Children.Add(_lowBatteryCondition);
+            battery.Children.Add(_automationAssignmentRow);
+
+            _quickProfiles = new UniformGrid();
+            _quickProfiles.Rows = 1;
+            _quickProfiles.Margin = new Thickness(0, 9, 0, 0);
+            PowerProfileOption[] profiles = PowerProfiles.All();
+            for (int index = 0; index < profiles.Length; index++)
+            {
+                PowerProfileOption profile = profiles[index];
+                ToggleButton button = new ToggleButton();
+                button.Content = QuickProfileContent(profile);
+                button.Tag = profile;
+                button.MinHeight = 66;
+                button.BorderThickness = new Thickness(1);
+                button.Margin = new Thickness(index == 0 ? 0 : 3, 0,
+                    index == profiles.Length - 1 ? 0 : 3, 0);
+                button.ToolTip = profile.Description;
+                button.Click += QuickProfileClicked;
+                button.AllowDrop = true;
+                button.DragOver += ProfileDragOver;
+                button.DragLeave += ProfileDragLeave;
+                button.Drop += ProfileDrop;
+                _quickProfiles.Children.Add(button);
+            }
+            battery.Children.Add(_quickProfiles);
+
+            _automationStatusRow = new Grid();
+            _automationStatusRow.Margin = new Thickness(0, 8, 0, 0);
+            _automationStatusRow.ColumnDefinitions.Add(new ColumnDefinition());
+            _automationStatusRow.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            _automationStatus = Text("", 10, FontWeights.Normal, _muted);
+            _automationStatus.TextWrapping = TextWrapping.Wrap;
+            _automationStatus.VerticalAlignment = VerticalAlignment.Center;
+            _automationStatusRow.Children.Add(_automationStatus);
+            _resumeAutomation = Button("Resume auto");
+            _resumeAutomation.Height = 28;
+            _resumeAutomation.Margin = new Thickness(9, 0, 0, 0);
+            _resumeAutomation.Padding = new Thickness(9, 0, 9, 1);
+            _resumeAutomation.FontSize = 11;
+            _resumeAutomation.Visibility = Visibility.Collapsed;
+            _resumeAutomation.Click += ResumeAutomationClicked;
+            Grid.SetColumn(_resumeAutomation, 1);
+            _automationStatusRow.Children.Add(_resumeAutomation);
+            battery.Children.Add(_automationStatusRow);
+
+            _advancedToggle = new ToggleButton();
+            _advancedToggle.Content = "Advanced controls  ▾";
+            _advancedToggle.Height = 30;
+            _advancedToggle.HorizontalAlignment = HorizontalAlignment.Left;
+            _advancedToggle.Margin = new Thickness(0, 10, 0, 0);
+            _advancedToggle.Padding = new Thickness(10, 0, 10, 1);
+            _advancedToggle.FontSize = 11;
+            _advancedToggle.FontWeight = FontWeights.SemiBold;
+            _advancedToggle.Foreground = _text;
+            _advancedToggle.Background = Brush("#202733");
+            _advancedToggle.BorderBrush = _cardBorder;
+            _advancedToggle.BorderThickness = new Thickness(1);
+            _advancedToggle.Cursor = Cursors.Hand;
+            _advancedToggle.Template = CreateToggleButtonTemplate(9);
+            _advancedToggle.Click += AdvancedToggleClicked;
+            battery.Children.Add(_advancedToggle);
+
+            _advancedPanel = new StackPanel();
+            _advancedPanel.Visibility = Visibility.Collapsed;
+            battery.Children.Add(_advancedPanel);
+
+            TextBlock acerHeading = Text(
+                "ACER SYSTEM PROFILE", 11, FontWeights.SemiBold, _muted);
+            acerHeading.Margin = new Thickness(0, 13, 0, 0);
+            _advancedPanel.Children.Add(acerHeading);
 
             _powerModes = new UniformGrid();
             _powerModes.Rows = 1;
             _powerModes.Margin = new Thickness(0, 8, 0, 0);
-            battery.Children.Add(_powerModes);
+            _advancedPanel.Children.Add(_powerModes);
+            _acerProfileDescription = Text("", 10, FontWeights.Normal, _muted);
+            _acerProfileDescription.Margin = new Thickness(0, 5, 0, 0);
+            _acerProfileDescription.TextWrapping = TextWrapping.Wrap;
+            _advancedPanel.Children.Add(_acerProfileDescription);
+
+            TextBlock windowsPowerHeading = Text(
+                "WINDOWS PERFORMANCE POLICY", 11, FontWeights.SemiBold, _muted);
+            windowsPowerHeading.Margin = new Thickness(0, 13, 0, 0);
+            _advancedPanel.Children.Add(windowsPowerHeading);
+
+            _windowsPowerModes = new UniformGrid();
+            _windowsPowerModes.Rows = 1;
+            _windowsPowerModes.Margin = new Thickness(0, 8, 0, 0);
+            string[] windowsModeNames = { "Efficiency", "Balanced", "Performance" };
+            for (int mode = 0; mode < windowsModeNames.Length; mode++)
+            {
+                ToggleButton button = new ToggleButton();
+                button.Content = windowsModeNames[mode];
+                button.Tag = mode;
+                button.MinHeight = 36;
+                button.FontSize = 12;
+                button.FontWeight = FontWeights.SemiBold;
+                button.BorderThickness = new Thickness(1);
+                button.Margin = new Thickness(mode == 0 ? 0 : 3, 0,
+                    mode == windowsModeNames.Length - 1 ? 0 : 3, 0);
+                button.ToolTip = "Set Windows responsiveness for the current power source";
+                button.Click += WindowsPowerModeClicked;
+                _windowsPowerModes.Children.Add(button);
+            }
+            _windowsPolicyDescription = Text("", 10, FontWeights.Normal, _muted);
+            _windowsPolicyDescription.Margin = new Thickness(0, 5, 0, 0);
+            _windowsPolicyDescription.TextWrapping = TextWrapping.Wrap;
+            _advancedPanel.Children.Add(_windowsPowerModes);
+            _advancedPanel.Children.Add(_windowsPolicyDescription);
+            UpdatePowerProfileDisplay();
+            UpdateAutomationVisuals();
 
             body.Children.Add(batteryCard);
 
             return shell;
+        }
+
+        private StackPanel QuickProfileContent(PowerProfileOption profile)
+        {
+            StackPanel content = new StackPanel();
+            content.VerticalAlignment = VerticalAlignment.Center;
+            TextBlock name = Text(profile.Name, 11, FontWeights.SemiBold, _text);
+            name.HorizontalAlignment = HorizontalAlignment.Center;
+            content.Children.Add(name);
+            TextBlock caption = Text(profile.Caption, 10, FontWeights.Normal, _muted);
+            caption.HorizontalAlignment = HorizontalAlignment.Center;
+            caption.Margin = new Thickness(0, 2, 0, 0);
+            content.Children.Add(caption);
+            TextBlock assignments = Text("", 10, FontWeights.SemiBold, _accent);
+            assignments.HorizontalAlignment = HorizontalAlignment.Center;
+            assignments.Margin = new Thickness(0, 4, 0, 0);
+            assignments.ToolTip = "Automatic conditions assigned to this profile";
+            content.Children.Add(assignments);
+            return content;
+        }
+
+        private ToggleButton CreateConditionButton(int condition, string icon, string label)
+        {
+            ToggleButton button = new ToggleButton();
+            StackPanel content = new StackPanel { Orientation = Orientation.Horizontal };
+            TextBlock iconText = new TextBlock
+            {
+                Text = icon,
+                FontFamily = new FontFamily(condition == 0
+                    ? "Segoe UI Symbol" : "Segoe MDL2 Assets"),
+                FontSize = condition == 0 ? 13 : 14,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            content.Children.Add(iconText);
+            TextBlock labelText = new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            content.Children.Add(labelText);
+            button.Content = content;
+            button.Tag = condition;
+            button.Height = 29;
+            button.Padding = new Thickness(8, 0, 8, 1);
+            button.Margin = new Thickness(0, 0, 5, 0);
+            button.Foreground = _text;
+            button.Background = Brush("#202733");
+            button.BorderBrush = _cardBorder;
+            button.BorderThickness = new Thickness(1);
+            button.Cursor = Cursors.Hand;
+            button.Template = CreateToggleButtonTemplate(9);
+            button.ToolTip = "Select, then click a profile; or drag onto a profile";
+            AutomationProperties.SetName(button, "Assign " + ConditionName(condition));
+            button.Click += ConditionButtonClicked;
+            button.PreviewMouseLeftButtonDown += ConditionMouseDown;
+            button.MouseMove += ConditionMouseMove;
+            return button;
+        }
+
+        private static ControlTemplate CreateContentOnlyToggleTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(ToggleButton));
+            FrameworkElementFactory presenter =
+                new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            presenter.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+            template.VisualTree = presenter;
+            return template;
+        }
+
+        private void AdvancedToggleClicked(object sender, RoutedEventArgs e)
+        {
+            bool expanded = _advancedToggle.IsChecked == true;
+            _advancedPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            _advancedToggle.Content = expanded ? "Advanced controls  ▴" : "Advanced controls  ▾";
+            UpdateLayout();
+            PositionBottomRight();
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -255,6 +586,8 @@ namespace SwiftControl
             PositionBottomRight();
             RefreshStartupDisplay();
             await RefreshAsync();
+            await RefreshWindowsPowerModeAsync(true);
+            await EvaluateAutomationAsync(true, true);
             _modePoll.Start();
         }
 
@@ -271,7 +604,7 @@ namespace SwiftControl
             RefreshStartupDisplay();
             _modePoll.Interval = TimeSpan.FromSeconds(30);
             _modePoll.Start();
-            RefreshTrayState();
+            RefreshTrayState(true);
         }
 
         private async void VisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -317,6 +650,27 @@ namespace SwiftControl
             {
                 _pollingMode = false;
             }
+            await RefreshWindowsPowerModeAsync(false);
+            await EvaluateAutomationAsync(false, false);
+        }
+
+        private void SystemPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.StatusChange) return;
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(delegate
+                {
+                    EvaluateAutomationFromPowerEvent();
+                }));
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        private async void EvaluateAutomationFromPowerEvent()
+        {
+            await RefreshWindowsPowerModeAsync(false);
+            await EvaluateAutomationAsync(false, false);
         }
 
         public void ShowFromTray()
@@ -352,6 +706,7 @@ namespace SwiftControl
                 return;
             }
             _modePoll.Stop();
+            SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
             base.OnClosing(e);
         }
 
@@ -366,8 +721,9 @@ namespace SwiftControl
             {
                 // WPF reports the work area in device-independent units, so
                 // these bounds also adapt when Windows display scaling changes.
+                double compactWidth = Math.Min(680, Math.Round(area.Width * 0.46));
                 Width = Math.Max(MinWidth,
-                    Math.Min(Math.Round(area.Width * 0.5), area.Width - (edgePadding * 2)));
+                    Math.Min(compactWidth, area.Width - (edgePadding * 2)));
                 MaxHeight = Math.Max(MinHeight,
                     area.Height - (edgePadding * 2) - autoHideTaskbarReserve);
 
@@ -414,6 +770,7 @@ namespace SwiftControl
         {
             _percent.Text = snapshot.BatteryPercent.ToString(CultureInfo.InvariantCulture) + "%";
             _progress.Value = snapshot.BatteryPercent;
+            _onAcPower = snapshot.OnAcPower;
             _powerState.Text = snapshot.OnAcPower ? "Plugged in" : "On battery";
             SetChargingLimitDisplay(snapshot.OptimizedCharging);
 
@@ -437,6 +794,7 @@ namespace SwiftControl
             }
             UpdatePowerModeButtons(_currentPowerMode);
             NotifyPowerModeObserved(_currentPowerMode);
+            UpdatePowerProfileDisplay();
 
         }
 
@@ -520,6 +878,252 @@ namespace SwiftControl
             return "\"" + Assembly.GetExecutingAssembly().Location + "\" --startup";
         }
 
+        private async void AutomationEnabledChanged(object sender, RoutedEventArgs e)
+        {
+            _automationSettings.Enabled = _automationEnabled.IsChecked == true;
+            if (!_automationSettings.Enabled) _selectedAutomationCondition = -1;
+            UpdateAutomationVisuals();
+            UpdateLayout();
+            PositionBottomRight();
+            await SaveAutomationSettingsAsync();
+        }
+
+        private void ConditionButtonClicked(object sender, RoutedEventArgs e)
+        {
+            if (_conditionDragCompleted)
+            {
+                _conditionDragCompleted = false;
+                UpdateAutomationVisuals();
+                return;
+            }
+
+            ToggleButton button = sender as ToggleButton;
+            if (button == null || button.Tag == null) return;
+            int condition = Convert.ToInt32(button.Tag, CultureInfo.InvariantCulture);
+            _selectedAutomationCondition = button.IsChecked == true
+                ? condition : -1;
+            UpdateAutomationVisuals();
+        }
+
+        private void LowBatteryThresholdMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            _selectedAutomationCondition = 2;
+            UpdateAutomationVisuals();
+        }
+
+        private void ConditionMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            ToggleButton button = sender as ToggleButton;
+            if (button == null || button.Tag == null) return;
+            _dragCondition = Convert.ToInt32(button.Tag, CultureInfo.InvariantCulture);
+            _conditionDragStart = e.GetPosition(this);
+            _conditionDragCompleted = false;
+        }
+
+        private void ConditionMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_dragCondition < 0 || e.LeftButton != MouseButtonState.Pressed) return;
+            Point current = e.GetPosition(this);
+            if (Math.Abs(current.X - _conditionDragStart.X) <
+                    SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(current.Y - _conditionDragStart.Y) <
+                    SystemParameters.MinimumVerticalDragDistance) return;
+
+            int condition = _dragCondition;
+            _dragCondition = -1;
+            _conditionDragCompleted = true;
+            DataObject data = new DataObject("SwiftControl.PowerCondition", condition);
+            DragDrop.DoDragDrop((DependencyObject)sender, data, DragDropEffects.Copy);
+            UpdateAutomationVisuals();
+        }
+
+        private void ProfileDragOver(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent("SwiftControl.PowerCondition")) return;
+            ToggleButton button = sender as ToggleButton;
+            if (button != null) button.BorderBrush = _accent;
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+
+        private void ProfileDragLeave(object sender, DragEventArgs e)
+        {
+            UpdatePowerProfileDisplay();
+        }
+
+        private async void ProfileDrop(object sender, DragEventArgs e)
+        {
+            ToggleButton button = sender as ToggleButton;
+            PowerProfileOption profile = button == null
+                ? null : button.Tag as PowerProfileOption;
+            if (profile == null ||
+                !e.Data.GetDataPresent("SwiftControl.PowerCondition")) return;
+            int condition = Convert.ToInt32(
+                e.Data.GetData("SwiftControl.PowerCondition"), CultureInfo.InvariantCulture);
+            e.Handled = true;
+            await AssignConditionAsync(condition, profile.Value);
+        }
+
+        private async Task AssignConditionAsync(int condition, int profileValue)
+        {
+            if (!PowerProfiles.IsValid(profileValue) || condition < 0 || condition > 2) return;
+            _automationSettings.SetProfileForCondition(condition, profileValue);
+            _selectedAutomationCondition = -1;
+            _dragCondition = -1;
+            UpdateAutomationVisuals();
+            await SaveAutomationSettingsAsync();
+        }
+
+        private async void ResumeAutomationClicked(object sender, RoutedEventArgs e)
+        {
+            if (!_automationSettings.Enabled) return;
+            await EvaluateAutomationAsync(true, true);
+        }
+
+        private async void AutomationThresholdLostFocus(
+            object sender, KeyboardFocusChangedEventArgs e)
+        {
+            int value;
+            if (!Int32.TryParse(_lowBatteryThreshold.Text, NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out value))
+            {
+                _lowBatteryThreshold.Text = _automationSettings.LowBatteryThreshold
+                    .ToString(CultureInfo.InvariantCulture);
+                return;
+            }
+
+            value = PowerAutomationSettings.ValidThreshold(value);
+            _lowBatteryThreshold.Text = value.ToString(CultureInfo.InvariantCulture);
+            if (value == _automationSettings.LowBatteryThreshold) return;
+            _automationSettings.LowBatteryThreshold = value;
+            UpdateAutomationVisuals();
+            await SaveAutomationSettingsAsync();
+        }
+
+        private void AutomationThresholdKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Enter) return;
+            _automationEnabled.Focus();
+            e.Handled = true;
+        }
+
+        private async Task SaveAutomationSettingsAsync()
+        {
+            try
+            {
+                _automationSettings.Save();
+                _lastAutomationCondition = -1;
+                UpdateAutomationVisuals();
+                if (_automationSettings.Enabled)
+                    await EvaluateAutomationAsync(true, true);
+            }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save automatic power modes: " + exception.Message);
+            }
+        }
+
+        private async Task EvaluateAutomationAsync(bool force, bool reportFailure)
+        {
+            if (!_automationSettings.Enabled || _automationApplying || _loading ||
+                _trayActionPending || _currentPowerMode < 0 ||
+                _currentWindowsPowerMode < 0) return;
+
+            _automationApplying = true;
+            try
+            {
+                PowerSourceSnapshot source = await Task.Run(new Func<PowerSourceSnapshot>(
+                    DashboardReader.ReadPowerSource));
+                if (_loading || _trayActionPending) return;
+
+                if (source.BatteryPercent >= 0)
+                {
+                    _percent.Text = source.BatteryPercent.ToString(CultureInfo.InvariantCulture) + "%";
+                    _progress.Value = source.BatteryPercent;
+                }
+                _powerState.Text = source.OnAcPower ? "Plugged in" : "On battery";
+                _onAcPower = source.OnAcPower;
+                UpdatePowerProfileDisplay();
+
+                int condition = _automationSettings.ConditionFor(
+                    source.OnAcPower, source.BatteryPercent, _lastAutomationCondition);
+                if (!force && condition == _lastAutomationCondition)
+                {
+                    UpdateAutomationVisuals();
+                    return;
+                }
+
+                _lastAutomationCondition = condition;
+                UpdateAutomationVisuals();
+                PowerProfileOption profile = _automationSettings.ProfileForCondition(condition);
+                if (profile.AcerMode == _currentPowerMode &&
+                    profile.WindowsMode == _currentWindowsPowerMode) return;
+                await ApplyPowerProfileAsync(profile, true, "Automatic profile");
+            }
+            catch (Exception exception)
+            {
+                if (reportFailure)
+                    ReportFailure("Could not evaluate automatic power mode: " + exception.Message);
+            }
+            finally
+            {
+                _automationApplying = false;
+                UpdateAutomationVisuals();
+            }
+        }
+
+        private void UpdateAutomationStatus(int condition)
+        {
+            if (_automationStatus == null) return;
+            if (_resumeAutomation != null)
+                _resumeAutomation.Visibility = Visibility.Collapsed;
+
+            if (_selectedAutomationCondition >= 0)
+            {
+                _automationStatus.Text = "Choose a profile for " +
+                    ConditionName(_selectedAutomationCondition) +
+                    ", or drag its chip onto one.";
+                return;
+            }
+
+            if (!_automationSettings.Enabled)
+            {
+                _automationStatus.Text = "Auto is off. Assignments are saved.";
+                return;
+            }
+
+            if (condition < 0)
+            {
+                _automationStatus.Text =
+                    "Waiting for power status. Manual changes last until the condition changes.";
+                return;
+            }
+
+            PowerProfileOption profile = _automationSettings.ProfileForCondition(condition);
+            bool expectedActive = profile.AcerMode == _currentPowerMode &&
+                profile.WindowsMode == _currentWindowsPowerMode;
+            if (!expectedActive && !_automationApplying)
+            {
+                PowerProfileOption current = PowerProfiles.Match(
+                    _currentPowerMode, _currentWindowsPowerMode);
+                _automationStatus.Text = "Manual override: " +
+                    (current == null ? "Custom" : current.Name) + " · Auto expects " +
+                    profile.Name + " for " + ConditionName(condition) + ".";
+                if (_resumeAutomation != null)
+                    _resumeAutomation.Visibility = Visibility.Visible;
+                return;
+            }
+
+            _automationStatus.Text = _automationApplying
+                ? "Applying " + profile.Name + " for " + ConditionName(condition) + "…"
+                : ConditionName(condition) + " → " + profile.Name + " is active.";
+            if (condition == 2)
+            {
+                _automationStatus.Text += " Clears at " +
+                    Math.Min(100, _automationSettings.LowBatteryThreshold + 5) + "%.";
+            }
+        }
+
         private async void LimitChanged(object sender, RoutedEventArgs e)
         {
             if (_loading || _suppressControlEvents) return;
@@ -554,6 +1158,119 @@ namespace SwiftControl
                 SetControlsEnabled(true);
             }
             if (refreshNeeded) await RefreshAsync(false);
+        }
+
+        private async void QuickProfileClicked(object sender, RoutedEventArgs e)
+        {
+            if (_loading) return;
+            ToggleButton clicked = sender as ToggleButton;
+            PowerProfileOption profile = clicked == null
+                ? null : clicked.Tag as PowerProfileOption;
+            if (profile == null) return;
+            if (_selectedAutomationCondition >= 0)
+            {
+                await AssignConditionAsync(_selectedAutomationCondition, profile.Value);
+                UpdatePowerProfileDisplay();
+                return;
+            }
+            if (profile.AcerMode == _currentPowerMode &&
+                profile.WindowsMode == _currentWindowsPowerMode)
+            {
+                UpdatePowerProfileDisplay();
+                return;
+            }
+
+            await ApplyPowerProfileAsync(profile, true, "Profile");
+        }
+
+        private async Task ApplyPowerProfileAsync(
+            PowerProfileOption profile, bool showOsd, string operationName)
+        {
+            if (_loading || profile == null) return;
+            bool refreshAcer = false;
+            bool refreshWindows = false;
+            System.Collections.Generic.List<string> failures =
+                new System.Collections.Generic.List<string>();
+
+            _loading = true;
+            _changingWindowsPowerMode = true;
+            SetControlsEnabled(false);
+            UpdateQuickProfileButtons(profile.Value);
+            _profileTitle.Text = "Applying " + profile.Name + "…";
+            _profileSummary.Text =
+                "Updating the Acer envelope and this power source's Windows policy.";
+            try
+            {
+                PowerSourceSnapshot source = await Task.Run(
+                    new Func<PowerSourceSnapshot>(DashboardReader.ReadPowerSource));
+                _onAcPower = source.OnAcPower;
+
+                if (_currentPowerMode != profile.AcerMode)
+                {
+                    try
+                    {
+                        bool acerVerified = await Task.Run(new Func<bool>(delegate
+                        {
+                            return DashboardReader.SetPowerMode(profile.AcerMode);
+                        }));
+                        if (!acerVerified)
+                            throw new InvalidOperationException(
+                                "the firmware retained a different profile");
+                        _currentPowerMode = profile.AcerMode;
+                        UpdatePowerModeButtons(_currentPowerMode);
+                        NotifyPowerModeObserved(_currentPowerMode);
+                    }
+                    catch (Exception exception)
+                    {
+                        failures.Add("Acer: " + exception.Message);
+                        refreshAcer = true;
+                    }
+                }
+
+                if (_currentWindowsPowerMode != profile.WindowsMode)
+                {
+                    try
+                    {
+                        bool windowsVerified = await Task.Run(new Func<bool>(delegate
+                        {
+                            return WindowsPowerMode.Set(source.OnAcPower, profile.WindowsMode);
+                        }));
+                        if (!windowsVerified)
+                            throw new InvalidOperationException(
+                                "Windows retained a different policy");
+                        _currentWindowsPowerMode = profile.WindowsMode;
+                        UpdateWindowsPowerModeButtons(_currentWindowsPowerMode);
+                    }
+                    catch (Exception exception)
+                    {
+                        failures.Add("Windows: " + exception.Message);
+                        refreshWindows = true;
+                    }
+                }
+
+                UpdatePowerProfileDisplay();
+                if (failures.Count == 0 && showOsd)
+                    ModeOsdWindow.Present(profile.Name);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception.Message);
+                refreshAcer = true;
+                refreshWindows = true;
+            }
+            finally
+            {
+                _changingWindowsPowerMode = false;
+                _loading = false;
+                SetControlsEnabled(true);
+                UpdatePowerProfileDisplay();
+            }
+
+            if (failures.Count > 0)
+                ReportFailure(operationName + " incomplete: " +
+                    String.Join("; ", failures.ToArray()));
+            if (refreshAcer) await RefreshAsync(false);
+            if (refreshWindows) await RefreshWindowsPowerModeAsync(false);
         }
 
         private async void PowerModeClicked(object sender, RoutedEventArgs e)
@@ -603,23 +1320,103 @@ namespace SwiftControl
             if (refreshNeeded) await RefreshAsync(false);
         }
 
-        public async void CyclePowerModeFromTray()
+        private async void WindowsPowerModeClicked(object sender, RoutedEventArgs e)
+        {
+            if (_loading || _changingWindowsPowerMode) return;
+            ToggleButton clicked = sender as ToggleButton;
+            if (clicked == null || clicked.Tag == null) return;
+            int targetMode = Convert.ToInt32(clicked.Tag, CultureInfo.InvariantCulture);
+            if (targetMode == _currentWindowsPowerMode)
+            {
+                UpdateWindowsPowerModeButtons(_currentWindowsPowerMode);
+                return;
+            }
+
+            int previous = _currentWindowsPowerMode;
+            _changingWindowsPowerMode = true;
+            _loading = true;
+            UpdateWindowsPowerModeButtons(targetMode);
+            SetControlsEnabled(false);
+            try
+            {
+                PowerSourceSnapshot source = await Task.Run(
+                    new Func<PowerSourceSnapshot>(DashboardReader.ReadPowerSource));
+                _onAcPower = source.OnAcPower;
+                bool verified = await Task.Run(new Func<bool>(delegate
+                {
+                    return WindowsPowerMode.Set(source.OnAcPower, targetMode);
+                }));
+                if (!verified)
+                    throw new InvalidOperationException("Windows did not retain the selected mode.");
+                _currentWindowsPowerMode = targetMode;
+                UpdateWindowsPowerModeButtons(targetMode);
+                ModeOsdWindow.Present("Windows · " + WindowsPowerMode.Name(targetMode));
+            }
+            catch (Exception exception)
+            {
+                UpdateWindowsPowerModeButtons(previous);
+                ReportFailure("Windows power-mode change failed: " + exception.Message);
+            }
+            finally
+            {
+                _loading = false;
+                _changingWindowsPowerMode = false;
+                SetControlsEnabled(true);
+            }
+        }
+
+        private async Task RefreshWindowsPowerModeAsync(bool reportFailure)
+        {
+            if (_changingWindowsPowerMode) return;
+            try
+            {
+                PowerSourceSnapshot source = await Task.Run(
+                    new Func<PowerSourceSnapshot>(DashboardReader.ReadPowerSource));
+                _onAcPower = source.OnAcPower;
+                int mode = await Task.Run(new Func<int>(delegate
+                {
+                    return WindowsPowerMode.Read(source.OnAcPower);
+                }));
+                _currentWindowsPowerMode = mode;
+                UpdateWindowsPowerModeButtons(mode);
+            }
+            catch (Exception exception)
+            {
+                if (reportFailure)
+                    ReportFailure("Could not read the Windows power mode: " + exception.Message);
+            }
+        }
+
+        public async void CyclePowerProfileFromTray()
         {
             if (_loading || _trayActionPending) return;
             _trayActionPending = true;
             try
             {
-                int live = await Task.Run(new Func<int>(DashboardReader.ReadPowerMode));
-                if (live < 0) throw new InvalidOperationException("Quick Access did not report a mode.");
-                _currentPowerMode = live;
-                UpdatePowerModeButtons(live);
-                NotifyPowerModeObserved(live);
-                int next = (live + 1) % 3;
-                await ChangePowerModeAsync(next, ModeName(next));
+                PowerSourceSnapshot source = await Task.Run(
+                    new Func<PowerSourceSnapshot>(DashboardReader.ReadPowerSource));
+                int acerMode = await Task.Run(new Func<int>(DashboardReader.ReadPowerMode));
+                int windowsMode = await Task.Run(new Func<int>(delegate
+                {
+                    return WindowsPowerMode.Read(source.OnAcPower);
+                }));
+                if (acerMode < 0)
+                    throw new InvalidOperationException("Quick Access did not report a mode.");
+                _onAcPower = source.OnAcPower;
+                _currentPowerMode = acerMode;
+                _currentWindowsPowerMode = windowsMode;
+                UpdatePowerModeButtons(acerMode);
+                UpdateWindowsPowerModeButtons(windowsMode);
+                NotifyPowerModeObserved(acerMode);
+                PowerProfileOption current = PowerProfiles.Match(acerMode, windowsMode);
+                int next = current == null
+                    ? PowerProfiles.Everyday
+                    : (current.Value + 1) % PowerProfiles.All().Length;
+                await ApplyPowerProfileAsync(PowerProfiles.Get(next), true, "Profile");
             }
             catch (Exception exception)
             {
-                ReportFailure("Power-mode change failed: " + exception.Message);
+                ReportFailure("Power-profile change failed: " + exception.Message);
             }
             finally
             {
@@ -627,13 +1424,14 @@ namespace SwiftControl
             }
         }
 
-        public async void SetPowerModeFromTray(int mode)
+        public async void SetPowerProfileFromTray(int profileValue)
         {
-            if (_loading || _trayActionPending) return;
+            if (_loading || _trayActionPending || !PowerProfiles.IsValid(profileValue)) return;
             _trayActionPending = true;
             try
             {
-                await ChangePowerModeAsync(mode, ModeName(mode));
+                await ApplyPowerProfileAsync(
+                    PowerProfiles.Get(profileValue), true, "Profile");
             }
             finally
             {
@@ -661,7 +1459,7 @@ namespace SwiftControl
             }
         }
 
-        public async void RefreshTrayState()
+        public async void RefreshTrayState(bool evaluateAutomation = false)
         {
             if (_loading || _trayActionPending) return;
             try
@@ -680,6 +1478,9 @@ namespace SwiftControl
             {
                 ReportFailure("Could not refresh tray controls: " + exception.Message);
             }
+            await RefreshWindowsPowerModeAsync(false);
+            if (evaluateAutomation)
+                await EvaluateAutomationAsync(true, true);
         }
 
         private void ReportFailure(string message)
@@ -690,6 +1491,7 @@ namespace SwiftControl
 
         private void UpdatePowerModeButtons(int selectedValue)
         {
+            if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {
                 ToggleButton button = element as ToggleButton;
@@ -701,6 +1503,219 @@ namespace SwiftControl
                 button.Foreground = selected ? _background : _text;
                 button.BorderBrush = selected ? _accent : _cardBorder;
             }
+            UpdatePowerProfileDisplay();
+        }
+
+        private void UpdateWindowsPowerModeButtons(int selectedValue)
+        {
+            if (_windowsPowerModes == null) return;
+            foreach (UIElement element in _windowsPowerModes.Children)
+            {
+                ToggleButton button = element as ToggleButton;
+                if (button == null || button.Tag == null) continue;
+                int mode = Convert.ToInt32(button.Tag, CultureInfo.InvariantCulture);
+                bool selected = mode == selectedValue;
+                button.IsChecked = selected;
+                button.Background = selected ? _accent : Brush("#202733");
+                button.Foreground = selected ? _background : _text;
+                button.BorderBrush = selected ? _accent : _cardBorder;
+            }
+            UpdatePowerProfileDisplay();
+        }
+
+        private void UpdateQuickProfileButtons(int selectedValue)
+        {
+            if (_quickProfiles == null) return;
+            foreach (UIElement element in _quickProfiles.Children)
+            {
+                ToggleButton button = element as ToggleButton;
+                PowerProfileOption profile = button == null
+                    ? null : button.Tag as PowerProfileOption;
+                if (profile == null) continue;
+                bool selected = profile.Value == selectedValue;
+                button.IsChecked = selected;
+                button.Background = selected ? _accent : Brush("#202733");
+                button.Foreground = selected ? _background : _text;
+                button.BorderBrush = selected ? _accent : _cardBorder;
+
+                StackPanel content = button.Content as StackPanel;
+                if (content == null) continue;
+                for (int index = 0; index < content.Children.Count; index++)
+                {
+                    TextBlock label = content.Children[index] as TextBlock;
+                    if (label == null) continue;
+                    label.Foreground = selected
+                        ? _background
+                        : index == 0 ? _text : _muted;
+                }
+            }
+        }
+
+        private void UpdateAutomationVisuals()
+        {
+            bool enabled = _automationSettings.Enabled;
+            if (_automationAssignmentRow != null)
+                _automationAssignmentRow.Visibility = enabled
+                    ? Visibility.Visible : Visibility.Collapsed;
+            if (_automationStatusRow != null)
+                _automationStatusRow.Visibility = enabled
+                    ? Visibility.Visible : Visibility.Collapsed;
+            if (_automationEnabled != null)
+            {
+                _automationEnabled.Content = enabled ? "Auto on  ▴" : "Auto  ▾";
+                _automationEnabled.Background = enabled ? _accent : Brush("#202733");
+                _automationEnabled.Foreground = enabled ? _background : _text;
+                _automationEnabled.BorderBrush = enabled ? _accent : _cardBorder;
+                _automationEnabled.ToolTip = enabled
+                    ? "Automatic switching is on; click to turn it off"
+                    : "Turn on automatic switching and show its assignments";
+            }
+            UpdateConditionButtons();
+            UpdateAssignmentBadges();
+            UpdateAutomationStatus(_lastAutomationCondition);
+        }
+
+        private void UpdateConditionButtons()
+        {
+            for (int condition = 0; condition < _conditionButtons.Length; condition++)
+            {
+                ToggleButton button = _conditionButtons[condition];
+                if (button == null) continue;
+                bool selected = condition == _selectedAutomationCondition;
+                bool active = _automationSettings.Enabled &&
+                    condition == _lastAutomationCondition;
+                button.IsChecked = selected;
+                if (condition == 2 && _lowBatteryCondition != null)
+                {
+                    button.Background = Brushes.Transparent;
+                    button.Foreground = selected
+                        ? _background : active ? _accent : _text;
+                    button.BorderBrush = Brushes.Transparent;
+                    button.BorderThickness = new Thickness(0);
+                    button.Opacity = 1.0;
+                    _lowBatteryCondition.Background = selected
+                        ? _accent : Brush("#202733");
+                    _lowBatteryCondition.BorderBrush = selected || active
+                        ? _accent : _cardBorder;
+                    _lowBatteryCondition.BorderThickness =
+                        new Thickness(active && !selected ? 2 : 1);
+                    _lowBatteryCondition.Opacity =
+                        _automationSettings.Enabled ? 1.0 : 0.90;
+                    if (_lowBatteryThreshold != null)
+                        _lowBatteryThreshold.Foreground = selected ? _background : _text;
+                    if (_lowBatteryPercentLabel != null)
+                    {
+                        _lowBatteryPercentLabel.Foreground = selected
+                            ? _background : active ? _accent : _muted;
+                    }
+                    continue;
+                }
+                button.Background = selected ? _accent : Brush("#202733");
+                button.Foreground = selected ? _background : active ? _accent : _text;
+                button.BorderBrush = selected || active ? _accent : _cardBorder;
+                button.BorderThickness = new Thickness(active && !selected ? 2 : 1);
+                button.Opacity = _automationSettings.Enabled ? 1.0 : 0.90;
+            }
+        }
+
+        private void UpdateAssignmentBadges()
+        {
+            if (_quickProfiles == null) return;
+            foreach (UIElement element in _quickProfiles.Children)
+            {
+                ToggleButton button = element as ToggleButton;
+                PowerProfileOption profile = button == null
+                    ? null : button.Tag as PowerProfileOption;
+                StackPanel content = button == null ? null : button.Content as StackPanel;
+                if (profile == null || content == null || content.Children.Count < 3) continue;
+                TextBlock assignments = content.Children[2] as TextBlock;
+                if (assignments == null) continue;
+                assignments.Visibility = _automationSettings.Enabled
+                    ? Visibility.Visible : Visibility.Collapsed;
+                button.MinHeight = _automationSettings.Enabled ? 66 : 56;
+                assignments.Text = AssignmentBadges(profile.Value);
+                bool selected = profile.AcerMode == _currentPowerMode &&
+                    profile.WindowsMode == _currentWindowsPowerMode;
+                assignments.Foreground = selected
+                    ? _background
+                    : _automationSettings.Enabled ? _accent : _muted;
+                assignments.Opacity = _automationSettings.Enabled ? 1.0 : 0.82;
+                button.ToolTip = profile.Description + "\n" +
+                    (assignments.Text.Length == 0
+                        ? "No automatic conditions assigned."
+                        : "Assigned: " + AssignmentDescription(profile.Value));
+            }
+        }
+
+        private string AssignmentBadges(int profileValue)
+        {
+            System.Collections.Generic.List<string> badges =
+                new System.Collections.Generic.List<string>();
+            if (_automationSettings.PluggedInProfile == profileValue) badges.Add("⚡");
+            if (_automationSettings.UnpluggedProfile == profileValue) badges.Add("BAT");
+            if (_automationSettings.LowBatteryProfile == profileValue)
+                badges.Add("LOW " + _automationSettings.LowBatteryThreshold + "%");
+            return String.Join("  ", badges.ToArray());
+        }
+
+        private string AssignmentDescription(int profileValue)
+        {
+            System.Collections.Generic.List<string> assignments =
+                new System.Collections.Generic.List<string>();
+            if (_automationSettings.PluggedInProfile == profileValue)
+                assignments.Add("plugged in");
+            if (_automationSettings.UnpluggedProfile == profileValue)
+                assignments.Add("on battery");
+            if (_automationSettings.LowBatteryProfile == profileValue)
+                assignments.Add("battery at or below " +
+                    _automationSettings.LowBatteryThreshold + "%");
+            return String.Join(", ", assignments.ToArray());
+        }
+
+        private string ConditionName(int condition)
+        {
+            if (condition == 0) return "plugged in";
+            if (condition == 2)
+                return "battery ≤ " + _automationSettings.LowBatteryThreshold + "%";
+            return "on battery";
+        }
+
+        private void UpdatePowerProfileDisplay()
+        {
+            if (_profileTitle == null || _profileSummary == null) return;
+            PowerProfileOption match = PowerProfiles.Match(
+                _currentPowerMode, _currentWindowsPowerMode);
+            if (_currentPowerMode < 0 || _currentWindowsPowerMode < 0)
+            {
+                _profileTitle.Text = "Reading current profile…";
+                _profileSummary.Text = "Waiting for Acer and Windows policy state.";
+                UpdateQuickProfileButtons(-1);
+            }
+            else
+            {
+                _profileTitle.Text = match == null ? "Custom" : match.Name;
+                _profileSummary.Text = PowerProfiles.CurrentDescription(
+                    _currentPowerMode, _currentWindowsPowerMode, _onAcPower);
+                UpdateQuickProfileButtons(match == null ? -1 : match.Value);
+            }
+            _profileSummary.ToolTip = _profileSummary.Text;
+
+            if (_acerProfileDescription != null)
+            {
+                _acerProfileDescription.Text = _currentPowerMode < 0
+                    ? "Reading Acer firmware state…"
+                    : PowerProfiles.AcerDescription(_currentPowerMode, _onAcPower);
+            }
+            if (_windowsPolicyDescription != null)
+            {
+                _windowsPolicyDescription.Text = _currentWindowsPowerMode < 0
+                    ? "Reading Windows policy…"
+                    : PowerProfiles.WindowsDescription(_currentWindowsPowerMode);
+            }
+            Action<int> profileHandler = PowerProfileObserved;
+            if (profileHandler != null)
+                profileHandler(match == null ? -1 : match.Value);
+            UpdateAutomationVisuals();
         }
 
         private void NotifyPowerModeObserved(int mode)
@@ -728,8 +1743,24 @@ namespace SwiftControl
 
         private void SetControlsEnabled(bool enabled)
         {
-            _refresh.IsEnabled = enabled;
-            _limit.IsEnabled = enabled;
+            if (_refresh != null) _refresh.IsEnabled = enabled;
+            if (_limit != null) _limit.IsEnabled = enabled;
+            if (_advancedToggle != null) _advancedToggle.IsEnabled = enabled;
+            if (_automationEnabled != null) _automationEnabled.IsEnabled = enabled;
+            if (_lowBatteryThreshold != null) _lowBatteryThreshold.IsEnabled = enabled;
+            for (int condition = 0; condition < _conditionButtons.Length; condition++)
+            {
+                if (_conditionButtons[condition] != null)
+                    _conditionButtons[condition].IsEnabled = enabled;
+            }
+            if (_resumeAutomation != null) _resumeAutomation.IsEnabled = enabled;
+            if (_quickProfiles != null)
+            {
+                foreach (UIElement element in _quickProfiles.Children)
+                    element.IsEnabled = enabled;
+            }
+            if (_windowsPowerModes != null) _windowsPowerModes.IsEnabled = enabled;
+            if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {
                 element.IsEnabled = enabled;

@@ -11,7 +11,7 @@ namespace SwiftControl
         private readonly MainWindow _window;
         private readonly NotifyIcon _notify;
         private readonly Icon[] _modeIcons;
-        private readonly ToolStripMenuItem[] _modeItems;
+        private readonly ToolStripMenuItem[] _profileItems;
         private readonly ToolStripMenuItem _chargeItem;
         private bool _disposed;
 
@@ -20,6 +20,7 @@ namespace SwiftControl
             _window = window;
             _modeIcons = new[] { CreateModeIcon(0), CreateModeIcon(1), CreateModeIcon(2) };
             _window.PowerModeObserved += ModeObserved;
+            _window.PowerProfileObserved += ProfileObserved;
             _window.ChargingLimitObserved += ChargingLimitObserved;
             _window.ChargingLimitChanged += ChargingLimitChanged;
             _window.OperationFailed += OperationFailed;
@@ -31,14 +32,16 @@ namespace SwiftControl
             menu.Items.Add(open);
             menu.Items.Add(new ToolStripSeparator());
 
-            string[] modeNames = { "Silent mode", "Normal mode", "Performance mode" };
-            _modeItems = new ToolStripMenuItem[3];
-            for (int mode = 0; mode < modeNames.Length; mode++)
+            PowerProfileOption[] profiles = PowerProfiles.All();
+            _profileItems = new ToolStripMenuItem[profiles.Length];
+            for (int profileIndex = 0; profileIndex < profiles.Length; profileIndex++)
             {
-                ToolStripMenuItem item = new ToolStripMenuItem(modeNames[mode]);
-                item.Tag = mode;
-                item.Click += ModeMenuClicked;
-                _modeItems[mode] = item;
+                PowerProfileOption profile = profiles[profileIndex];
+                ToolStripMenuItem item = new ToolStripMenuItem(profile.Name);
+                item.ToolTipText = profile.Description;
+                item.Tag = profile.Value;
+                item.Click += ProfileMenuClicked;
+                _profileItems[profileIndex] = item;
                 menu.Items.Add(item);
             }
 
@@ -64,14 +67,14 @@ namespace SwiftControl
         {
             if (e.Button == MouseButtons.Left)
             {
-                _window.CyclePowerModeFromTray();
+                _window.CyclePowerProfileFromTray();
             }
         }
 
-        private void ModeMenuClicked(object sender, EventArgs e)
+        private void ProfileMenuClicked(object sender, EventArgs e)
         {
             ToolStripMenuItem item = sender as ToolStripMenuItem;
-            if (item != null) _window.SetPowerModeFromTray((int)item.Tag);
+            if (item != null) _window.SetPowerProfileFromTray((int)item.Tag);
         }
 
         private void ChargeMenuClicked(object sender, EventArgs e)
@@ -91,9 +94,19 @@ namespace SwiftControl
             string[] names = { "Silent", "Normal", "Performance" };
             _notify.Icon = _modeIcons[mode];
             _notify.Text = "SwiftControl · " + names[mode];
-            for (int index = 0; index < _modeItems.Length; index++)
+        }
+
+        private void ProfileObserved(int profileValue)
+        {
+            if (_disposed) return;
+            PowerProfileOption profile = PowerProfiles.IsValid(profileValue)
+                ? PowerProfiles.Get(profileValue) : null;
+            _notify.Text = "SwiftControl · " +
+                (profile == null ? "Custom" : profile.Name);
+            for (int index = 0; index < _profileItems.Length; index++)
             {
-                _modeItems[index].Checked = index == mode;
+                _profileItems[index].Checked = profile != null &&
+                    Convert.ToInt32(_profileItems[index].Tag) == profile.Value;
             }
         }
 
@@ -124,6 +137,7 @@ namespace SwiftControl
             if (_disposed) return;
             _disposed = true;
             _window.PowerModeObserved -= ModeObserved;
+            _window.PowerProfileObserved -= ProfileObserved;
             _window.ChargingLimitObserved -= ChargingLimitObserved;
             _window.ChargingLimitChanged -= ChargingLimitChanged;
             _window.OperationFailed -= OperationFailed;

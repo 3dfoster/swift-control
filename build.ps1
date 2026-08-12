@@ -33,7 +33,10 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
     "$source\DashboardReader.cs" `
     "$source\MainWindow.cs" `
     "$source\ModeOsdWindow.cs" `
+    "$source\PowerAutomation.cs" `
+    "$source\PowerProfiles.cs" `
     "$source\TrayController.cs" `
+    "$source\WindowsPowerMode.cs" `
     "$source\Program.cs"
 
 if ($LASTEXITCODE -ne 0) {
@@ -49,6 +52,9 @@ if ($LASTEXITCODE -ne 0) {
     "/out:$output\SwiftControl.SelfTest.exe" `
     "$source\AcerProtocol.cs" `
     "$source\DashboardReader.cs" `
+    "$source\PowerAutomation.cs" `
+    "$source\PowerProfiles.cs" `
+    "$source\WindowsPowerMode.cs" `
     "$PSScriptRoot\tools\SelfTest.cs"
 
 if ($LASTEXITCODE -ne 0) {

@@ -4,12 +4,15 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
 
 - read and toggle Acer's 80% optimized battery charging mode;
 - show charge and AC state;
-- select Silent, Normal, or Performance firmware mode;
+- apply four evidence-based profiles that pair the Acer system envelope with
+  the Windows performance policy;
+- independently select Acer Silent, Normal, or Performance and Windows Best
+  power efficiency, Balanced, or Best performance from Advanced controls;
 - read and set Windows 11 Best power efficiency, Balanced, or Best performance
   mode for the active power source;
 - follow mode changes made by AcerSense or the keyboard;
-- automatically choose a mode when plugged in, unplugged, or below a chosen
-  battery percentage;
+- automatically choose a paired profile when plugged in, unplugged, or below a
+  chosen battery percentage;
 - show a lightweight OSD after a verified power-mode change;
 - use a mode-specific notification-area icon;
 - optionally launch quietly in the notification area at Windows sign-in.
@@ -20,13 +23,22 @@ analytics. The launch-at-startup option uses the current user's standard Windows
 
 ## Controls
 
-- Left-click the notification-area icon to cycle power modes.
-- Right-click it to open the panel, choose a mode, change the charging limit, or
-  exit SwiftControl.
+- Choose Battery Saver, Everyday, Responsive, or Maximum in the panel to apply
+  both control layers together. Advanced controls expose each layer separately
+  and show unmatched combinations as Custom.
+- Left-click the notification-area icon to cycle Battery Saver, Everyday,
+  Responsive, and Maximum.
+- Right-click it to open the panel, choose any of those paired profiles, change
+  the charging limit, or exit SwiftControl. The checked item follows the live
+  Acer and Windows combination.
 - The panel closes when focus moves elsewhere.
-- Automatic power modes are opt-in. Configure a target for each power condition
-  in the panel, then enable the rules. A manual mode change remains active until
-  the power condition changes.
+- Automatic power profiles are integrated into the profile row. The Auto
+  button both enables switching and expands its controls; turning it off hides
+  the irrelevant condition controls, status, and assignment badges. When open,
+  select a Plugged, Battery, or Below condition chip and click its destination
+  profile, or drag the chip onto that profile. A manual change remains active
+  until the power condition changes or Resume auto is clicked. Low battery
+  clears five percentage points above its entry threshold.
 - Charge-limit changes show a confirmation notification; failed operations show
   an error notification.
 

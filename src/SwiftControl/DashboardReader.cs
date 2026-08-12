@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace SwiftControl
@@ -23,6 +25,12 @@ namespace SwiftControl
         public bool OptimizedCharging { get; set; }
         public int CurrentPowerMode { get; set; }
         public List<PowerModeOption> PowerModes { get; set; }
+    }
+
+    internal sealed class PowerSourceSnapshot
+    {
+        public bool OnAcPower { get; set; }
+        public int BatteryPercent { get; set; }
     }
 
     internal static class DashboardReader
@@ -139,6 +147,23 @@ namespace SwiftControl
             }
         }
 
+        public static PowerSourceSnapshot ReadPowerSource()
+        {
+            SystemPowerStatus status;
+            if (!GetSystemPowerStatus(out status))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+
+            if (status.ACLineStatus == 255)
+                throw new InvalidOperationException("Windows could not determine the power source.");
+
+            return new PowerSourceSnapshot
+            {
+                OnAcPower = status.ACLineStatus == 1,
+                BatteryPercent = status.BatteryLifePercent == 255
+                    ? -1 : status.BatteryLifePercent
+            };
+        }
+
         private static bool OptimizedChargingValue(Dictionary<string, object> result)
         {
             int value = AcerJson.Int(result, "Value", -1);
@@ -154,6 +179,20 @@ namespace SwiftControl
                 throw new InvalidOperationException("Acer reported an invalid power-mode value.");
             return value;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SystemPowerStatus
+        {
+            public byte ACLineStatus;
+            public byte BatteryFlag;
+            public byte BatteryLifePercent;
+            public byte SystemStatusFlag;
+            public uint BatteryLifeTime;
+            public uint BatteryFullLifeTime;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
 
     }
 }

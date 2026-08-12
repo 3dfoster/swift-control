@@ -264,19 +264,35 @@ sustained CPU budget at 20 W. Acer Performance + Windows Best performance is
 most useful for workloads that can actually use more than 20 W or for platform
 conditions where the Performance fan table provides extra thermal headroom.
 
-## Suggested user-facing pairings
+## Implemented user-facing pairings
 
-Simple aligned presets remain understandable defaults:
+SwiftControl presents these four paired profiles as the primary controls:
 
 | Preset | Acer system profile | Windows performance policy |
 |---|---|---|
-| Quiet / Eco | Silent | Best power efficiency |
-| Balanced | Normal | Balanced |
-| Maximum performance | Performance | Best performance |
+| Battery Saver | Silent | Best power efficiency |
+| Everyday | Normal | Balanced |
+| Responsive | Normal | Best performance |
+| Maximum | Performance | Best performance |
 
-They should be presented as convenient presets, not as the only meaningful
-combinations. Advanced users may intentionally choose combinations such as
-Normal + Best performance.
+Advanced controls retain independent selectors for both layers. Any unmatched
+combination is labeled `Custom`. Automatic rules select one of these paired
+profiles for plugged in, unplugged, and low-battery conditions; the low-battery
+rule uses five percentage points of hysteresis.
+
+Automation is configured directly on the profile row: selecting a condition
+chip and clicking a profile assigns it, while dragging the chip to the profile
+is an equivalent shortcut. Assignment badges remain visible on the destination
+profiles. Manual changes are shown explicitly as an override and can be ended
+immediately with `Resume auto`, rather than waiting for the power condition to
+change.
+
+The `Auto` control is both the enable switch and the panel expander. When it is
+off, condition controls, status, threshold, and assignment badges are hidden;
+the primary profile row remains available for manual selection.
+
+The interface only shows the measured 15/20/30 W sustained targets while the
+machine is on battery. On AC it explicitly says the power limits are unmeasured.
 
 ## Telemetry and testing pitfalls
 
