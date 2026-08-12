@@ -29,6 +29,8 @@ namespace SwiftControl
         private const int WmDpiChanged = 0x02E0;
         private const uint SwpNoZOrder = 0x0004;
         private const uint SwpNoActivate = 0x0010;
+        private const int StartupServiceWaitSeconds = 90;
+        private const int StartupServiceRetrySeconds = 3;
 
         private readonly Brush _background = Brush("#0B0E14");
         private readonly Brush _card = Brush("#151A22");
@@ -45,6 +47,10 @@ namespace SwiftControl
         private UniformGrid _quickProfiles;
         private UniformGrid _powerModes;
         private UniformGrid _windowsPowerModes;
+        private ToggleButton _batteryHibernate;
+        private TextBlock _batteryHibernateStatus;
+        private ToggleButton _standbyNetwork;
+        private TextBlock _standbyNetworkStatus;
         private TextBlock _profileTitle;
         private TextBlock _profileSummary;
         private ToggleButton _advancedToggle;
@@ -81,6 +87,8 @@ namespace SwiftControl
         private bool _positioning;
         private bool _automationApplying;
         private bool _changingWindowsPowerMode;
+        private bool _changingBatteryHibernate;
+        private bool _changingStandbyNetwork;
         private IntPtr _targetMonitor;
         private HwndSource _windowSource;
 
@@ -515,6 +523,80 @@ namespace SwiftControl
             _windowsPolicyDescription.TextWrapping = TextWrapping.Wrap;
             _advancedPanel.Children.Add(_windowsPowerModes);
             _advancedPanel.Children.Add(_windowsPolicyDescription);
+
+            Grid batteryHibernateHeader = new Grid();
+            batteryHibernateHeader.Margin = new Thickness(0, 13, 0, 0);
+            batteryHibernateHeader.ColumnDefinitions.Add(new ColumnDefinition());
+            batteryHibernateHeader.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock batteryHibernateHeading = Text(
+                "HIBERNATE ON BATTERY", 11, FontWeights.SemiBold, _muted);
+            batteryHibernateHeading.VerticalAlignment = VerticalAlignment.Center;
+            batteryHibernateHeader.Children.Add(batteryHibernateHeading);
+
+            _batteryHibernate = new ToggleButton();
+            _batteryHibernate.Content = "After 30 min";
+            _batteryHibernate.Height = 29;
+            _batteryHibernate.Padding = new Thickness(10, 0, 10, 1);
+            _batteryHibernate.FontSize = 11;
+            _batteryHibernate.FontWeight = FontWeights.SemiBold;
+            _batteryHibernate.Foreground = _text;
+            _batteryHibernate.Background = Brush("#202733");
+            _batteryHibernate.BorderBrush = _cardBorder;
+            _batteryHibernate.BorderThickness = new Thickness(1);
+            _batteryHibernate.Cursor = Cursors.Hand;
+            _batteryHibernate.Template = CreateToggleButtonTemplate(9);
+            _batteryHibernate.ToolTip =
+                "Set only the unplugged hibernate timeout; plugged-in policy is unchanged";
+            AutomationProperties.SetName(
+                _batteryHibernate, "Hibernate after 30 minutes on battery");
+            _batteryHibernate.Click += BatteryHibernateClicked;
+            Grid.SetColumn(_batteryHibernate, 1);
+            batteryHibernateHeader.Children.Add(_batteryHibernate);
+            _advancedPanel.Children.Add(batteryHibernateHeader);
+
+            _batteryHibernateStatus = Text(
+                "Reading Windows battery policy…", 10, FontWeights.Normal, _muted);
+            _batteryHibernateStatus.Margin = new Thickness(0, 5, 0, 0);
+            _batteryHibernateStatus.TextWrapping = TextWrapping.Wrap;
+            _advancedPanel.Children.Add(_batteryHibernateStatus);
+
+            Grid standbyNetworkHeader = new Grid();
+            standbyNetworkHeader.Margin = new Thickness(0, 13, 0, 0);
+            standbyNetworkHeader.ColumnDefinitions.Add(new ColumnDefinition());
+            standbyNetworkHeader.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock standbyNetworkHeading = Text(
+                "MODERN STANDBY NETWORK", 11, FontWeights.SemiBold, _muted);
+            standbyNetworkHeading.VerticalAlignment = VerticalAlignment.Center;
+            standbyNetworkHeader.Children.Add(standbyNetworkHeading);
+
+            _standbyNetwork = new ToggleButton();
+            _standbyNetwork.Content = "Disconnect";
+            _standbyNetwork.Height = 29;
+            _standbyNetwork.Padding = new Thickness(10, 0, 10, 1);
+            _standbyNetwork.FontSize = 11;
+            _standbyNetwork.FontWeight = FontWeights.SemiBold;
+            _standbyNetwork.Foreground = _text;
+            _standbyNetwork.Background = Brush("#202733");
+            _standbyNetwork.BorderBrush = _cardBorder;
+            _standbyNetwork.BorderThickness = new Thickness(1);
+            _standbyNetwork.Cursor = Cursors.Hand;
+            _standbyNetwork.Template = CreateToggleButtonTemplate(9);
+            _standbyNetwork.ToolTip =
+                "Disconnect networking only during unplugged Modern Standby";
+            AutomationProperties.SetName(
+                _standbyNetwork, "Disconnect network during battery standby");
+            _standbyNetwork.Click += StandbyNetworkClicked;
+            Grid.SetColumn(_standbyNetwork, 1);
+            standbyNetworkHeader.Children.Add(_standbyNetwork);
+            _advancedPanel.Children.Add(standbyNetworkHeader);
+
+            _standbyNetworkStatus = Text(
+                "Reading Windows standby policy…", 10, FontWeights.Normal, _muted);
+            _standbyNetworkStatus.Margin = new Thickness(0, 5, 0, 0);
+            _standbyNetworkStatus.TextWrapping = TextWrapping.Wrap;
+            _advancedPanel.Children.Add(_standbyNetworkStatus);
             UpdatePowerProfileDisplay();
             UpdateAutomationVisuals();
 
@@ -611,6 +693,8 @@ namespace SwiftControl
             RefreshStartupDisplay();
             await RefreshAsync();
             await RefreshWindowsPowerModeAsync(true);
+            await RefreshBatteryHibernateAsync(true);
+            await RefreshStandbyNetworkAsync(true);
             await EvaluateAutomationAsync(true, true);
             UpdateAcerSenseCloseButton();
             _modePoll.Start();
@@ -633,12 +717,35 @@ namespace SwiftControl
                 _targetMonitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
         }
 
-        public void StartHidden()
+        public async void StartHidden()
         {
             RefreshStartupDisplay();
             _modePoll.Interval = TimeSpan.FromSeconds(30);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(StartupServiceWaitSeconds);
+            bool ready = false;
+            do
+            {
+                ready = await RefreshTrayStateAsync(false, false);
+                if (ready) break;
+                TimeSpan remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero) break;
+                TimeSpan delay = TimeSpan.FromSeconds(StartupServiceRetrySeconds);
+                if (delay > remaining) delay = remaining;
+                await Task.Delay(delay);
+            }
+            while (DateTime.UtcNow < deadline);
+
+            if (ready)
+            {
+                await EvaluateAutomationAsync(true, true);
+            }
+            else
+            {
+                ReportFailure(
+                    "Acer services were still unavailable 90 seconds after sign-in. " +
+                    "Open SwiftControl to retry.");
+            }
             _modePoll.Start();
-            RefreshTrayState(true);
         }
 
         private async void VisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -653,6 +760,8 @@ namespace SwiftControl
                     UpdateAcerSenseCloseButton();
                     await RefreshAsync(false, false);
                     await RefreshPowerModeAsync();
+                    await RefreshBatteryHibernateAsync(false);
+                    await RefreshStandbyNetworkAsync(false);
                 }
             }
             else
@@ -698,6 +807,8 @@ namespace SwiftControl
                 _pollingMode = false;
             }
             await RefreshWindowsPowerModeAsync(false);
+            await RefreshBatteryHibernateAsync(false);
+            await RefreshStandbyNetworkAsync(false);
             await EvaluateAutomationAsync(false, false);
         }
 
@@ -1158,6 +1269,143 @@ namespace SwiftControl
         private static string StartupCommand()
         {
             return "\"" + Assembly.GetExecutingAssembly().Location + "\" --startup";
+        }
+
+        private async void BatteryHibernateClicked(object sender, RoutedEventArgs e)
+        {
+            if (_changingBatteryHibernate) return;
+            bool enabled = _batteryHibernate.IsChecked == true;
+            Exception failure = null;
+            _changingBatteryHibernate = true;
+            _batteryHibernate.IsEnabled = false;
+            try
+            {
+                BatteryHibernateStatus status = await Task.Run(
+                    new Func<BatteryHibernateStatus>(delegate
+                    {
+                        return BatteryHibernate.SetManaged(enabled);
+                    }));
+                SetBatteryHibernateDisplay(status);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+            finally
+            {
+                _changingBatteryHibernate = false;
+                _batteryHibernate.IsEnabled = true;
+            }
+            if (failure != null)
+            {
+                await RefreshBatteryHibernateAsync(false);
+                ReportFailure("Battery hibernate change failed: " + failure.Message);
+            }
+        }
+
+        private async Task RefreshBatteryHibernateAsync(bool reportFailure)
+        {
+            if (_changingBatteryHibernate) return;
+            try
+            {
+                BatteryHibernateStatus status = await Task.Run(
+                    new Func<BatteryHibernateStatus>(BatteryHibernate.ReadStatus));
+                SetBatteryHibernateDisplay(status);
+            }
+            catch (Exception exception)
+            {
+                if (_batteryHibernateStatus != null)
+                    _batteryHibernateStatus.Text =
+                        "Windows battery hibernate policy is unavailable.";
+                if (reportFailure)
+                    ReportFailure("Could not read the battery hibernate timeout: " +
+                        exception.Message);
+            }
+        }
+
+        private void SetBatteryHibernateDisplay(BatteryHibernateStatus status)
+        {
+            if (_batteryHibernate == null || status == null) return;
+            _batteryHibernate.IsChecked = status.Managed;
+            _batteryHibernate.Background = status.Managed ? _accent : Brush("#202733");
+            _batteryHibernate.Foreground = status.Managed ? _background : _text;
+            _batteryHibernate.BorderBrush = status.Managed ? _accent : _cardBorder;
+            if (_batteryHibernateStatus == null) return;
+
+            string current = BatteryHibernate.FormatTimeout(status.TimeoutSeconds);
+            _batteryHibernateStatus.Text = status.Managed
+                ? "Battery timeout: 30 min. Plugged-in timeout is unchanged."
+                : "Battery timeout: " + current +
+                    ". Enable to use 30 min; plugged-in timeout is unchanged.";
+        }
+
+        private async void StandbyNetworkClicked(object sender, RoutedEventArgs e)
+        {
+            if (_changingStandbyNetwork) return;
+            bool disconnected = _standbyNetwork.IsChecked == true;
+            Exception failure = null;
+            _changingStandbyNetwork = true;
+            _standbyNetwork.IsEnabled = false;
+            try
+            {
+                ModernStandbyNetworkStatus status = await Task.Run(
+                    new Func<ModernStandbyNetworkStatus>(delegate
+                    {
+                        return ModernStandbyNetwork.SetDisconnected(disconnected);
+                    }));
+                SetStandbyNetworkDisplay(status);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+            finally
+            {
+                _changingStandbyNetwork = false;
+                _standbyNetwork.IsEnabled = true;
+            }
+            if (failure != null)
+            {
+                await RefreshStandbyNetworkAsync(false);
+                ReportFailure("Standby-network change failed: " + failure.Message);
+            }
+        }
+
+        private async Task RefreshStandbyNetworkAsync(bool reportFailure)
+        {
+            if (_changingStandbyNetwork) return;
+            try
+            {
+                ModernStandbyNetworkStatus status = await Task.Run(
+                    new Func<ModernStandbyNetworkStatus>(
+                        ModernStandbyNetwork.ReadStatus));
+                SetStandbyNetworkDisplay(status);
+            }
+            catch (Exception exception)
+            {
+                if (_standbyNetworkStatus != null)
+                    _standbyNetworkStatus.Text =
+                        "Windows standby-network policy is unavailable.";
+                if (reportFailure)
+                    ReportFailure("Could not read the standby-network policy: " +
+                        exception.Message);
+            }
+        }
+
+        private void SetStandbyNetworkDisplay(ModernStandbyNetworkStatus status)
+        {
+            if (_standbyNetwork == null || status == null) return;
+            bool disconnected = status.Disconnected;
+            _standbyNetwork.IsChecked = disconnected;
+            _standbyNetwork.Background = disconnected ? _accent : Brush("#202733");
+            _standbyNetwork.Foreground = disconnected ? _background : _text;
+            _standbyNetwork.BorderBrush = disconnected ? _accent : _cardBorder;
+            if (_standbyNetworkStatus == null) return;
+
+            _standbyNetworkStatus.Text = "Battery standby: " +
+                ModernStandbyNetwork.FormatPolicy(status.BatteryPolicy) +
+                ". Plugged in: " +
+                ModernStandbyNetwork.FormatPolicy(status.PluggedInPolicy) + ".";
         }
 
         private async void AutomationEnabledChanged(object sender, RoutedEventArgs e)
@@ -1743,7 +1991,14 @@ namespace SwiftControl
 
         public async void RefreshTrayState(bool evaluateAutomation = false)
         {
-            if (_loading || _trayActionPending) return;
+            await RefreshTrayStateAsync(evaluateAutomation, true);
+        }
+
+        private async Task<bool> RefreshTrayStateAsync(
+            bool evaluateAutomation, bool reportFailure)
+        {
+            if (_loading || _trayActionPending) return false;
+            bool refreshed = false;
             try
             {
                 int mode = await Task.Run(new Func<int>(DashboardReader.ReadPowerMode));
@@ -1755,14 +2010,17 @@ namespace SwiftControl
                     NotifyPowerModeObserved(mode);
                 }
                 SetChargingLimitDisplay(limit);
+                refreshed = true;
             }
             catch (Exception exception)
             {
-                ReportFailure("Could not refresh tray controls: " + exception.Message);
+                if (reportFailure)
+                    ReportFailure("Could not refresh tray controls: " + exception.Message);
             }
             await RefreshWindowsPowerModeAsync(false);
-            if (evaluateAutomation)
+            if (refreshed && evaluateAutomation)
                 await EvaluateAutomationAsync(true, true);
+            return refreshed;
         }
 
         private void ReportFailure(string message)
@@ -2042,6 +2300,10 @@ namespace SwiftControl
                     element.IsEnabled = enabled;
             }
             if (_windowsPowerModes != null) _windowsPowerModes.IsEnabled = enabled;
+            if (_batteryHibernate != null && !_changingBatteryHibernate)
+                _batteryHibernate.IsEnabled = enabled;
+            if (_standbyNetwork != null && !_changingStandbyNetwork)
+                _standbyNetwork.IsEnabled = enabled;
             if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {

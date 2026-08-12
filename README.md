@@ -10,6 +10,10 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
   power efficiency, Balanced, or Best performance from Advanced controls;
 - read and set Windows 11 Best power efficiency, Balanced, or Best performance
   mode for the active power source;
+- optionally set a 30-minute hibernate timeout on battery without changing the
+  plugged-in timeout, and restore the previous battery timeout when disabled;
+- disconnect networking during Modern Standby on battery without changing the
+  plugged-in policy, restoring the previous battery policy when disabled;
 - follow mode changes made by AcerSense or the keyboard;
 - automatically choose a paired profile when plugged in, unplugged, or below a
   chosen battery percentage;
@@ -19,7 +23,8 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
 
 SwiftControl talks only to Acer's installed localhost services and does not send
 analytics. The launch-at-startup option uses the current user's standard Windows
-`Run` entry and does not require administrator access.
+`Run` entry and does not require administrator access. At sign-in, SwiftControl
+quietly allows up to 90 seconds for Acer's delayed services to become available.
 
 ## Controls
 
@@ -41,6 +46,10 @@ analytics. The launch-at-startup option uses the current user's standard Windows
   clears five percentage points above its entry threshold.
 - Charge-limit changes show a confirmation notification; failed operations show
   an error notification.
+- Advanced controls includes a Hibernate on battery toggle. Its status line
+  shows the live Windows battery timeout; the plugged-in policy is never changed.
+- The adjacent Modern Standby network toggle shows the live battery and
+  plugged-in policies and can disconnect networking only while unplugged.
 
 The power-mode OSD embeds the system-usage graphic extracted from this laptop's
 locally installed Acer Quick Access package. It is retained for personal local

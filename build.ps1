@@ -30,9 +30,11 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
     "/reference:$systemXaml" `
     "$source\AcerProtocol.cs" `
     "$source\AssemblyInfo.cs" `
+    "$source\BatteryHibernate.cs" `
     "$source\DashboardReader.cs" `
     "$source\MainWindow.cs" `
     "$source\ModeOsdWindow.cs" `
+    "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
     "$source\TrayController.cs" `
@@ -51,7 +53,9 @@ if ($LASTEXITCODE -ne 0) {
     /main:SwiftControl.SelfTest `
     "/out:$output\SwiftControl.SelfTest.exe" `
     "$source\AcerProtocol.cs" `
+    "$source\BatteryHibernate.cs" `
     "$source\DashboardReader.cs" `
+    "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
     "$source\WindowsPowerMode.cs" `

@@ -17,6 +17,10 @@ namespace SwiftControl
 
                 VerifyPowerProfiles();
                 Console.WriteLine("Power-profile mappings and hysteresis verified.");
+                VerifyBatteryHibernateFormatting();
+                Console.WriteLine("Battery-hibernate timeout formatting verified.");
+                VerifyModernStandbyNetworkFormatting();
+                Console.WriteLine("Modern Standby network-policy formatting verified.");
 
                 if (args.Length > 0 && String.Equals(args[0], "--write-current",
                     StringComparison.OrdinalIgnoreCase))
@@ -27,6 +31,48 @@ namespace SwiftControl
                     if (!DashboardReader.SetPowerMode(snapshot.CurrentPowerMode))
                         throw new InvalidOperationException("Power-mode verification failed.");
                     Console.WriteLine("No-op writes verified.");
+                }
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--enable-battery-hibernate",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    BatteryHibernateStatus hibernate = BatteryHibernate.SetManaged(true);
+                    Console.WriteLine("Battery hibernate: {0} ({1})",
+                        hibernate.Managed ? "managed" : "not managed",
+                        BatteryHibernate.FormatTimeout(hibernate.TimeoutSeconds));
+                }
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--disable-battery-hibernate",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    BatteryHibernateStatus hibernate = BatteryHibernate.SetManaged(false);
+                    Console.WriteLine("Battery hibernate: {0} ({1})",
+                        hibernate.Managed ? "managed" : "not managed",
+                        BatteryHibernate.FormatTimeout(hibernate.TimeoutSeconds));
+                }
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--disconnect-battery-standby",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    ModernStandbyNetworkStatus network =
+                        ModernStandbyNetwork.SetDisconnected(true);
+                    Console.WriteLine("Standby network: battery {0}; AC {1}",
+                        ModernStandbyNetwork.FormatPolicy(network.BatteryPolicy),
+                        ModernStandbyNetwork.FormatPolicy(network.PluggedInPolicy));
+                }
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--restore-battery-standby-network",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    ModernStandbyNetworkStatus network =
+                        ModernStandbyNetwork.SetDisconnected(false);
+                    Console.WriteLine("Standby network: battery {0}; AC {1}",
+                        ModernStandbyNetwork.FormatPolicy(network.BatteryPolicy),
+                        ModernStandbyNetwork.FormatPolicy(network.PluggedInPolicy));
                 }
 
                 return 0;
@@ -80,6 +126,33 @@ namespace SwiftControl
             Assert(Object.ReferenceEquals(profile,
                 PowerProfiles.Match(acerMode, windowsMode)),
                 "The paired profile should round-trip through Match.");
+        }
+
+        private static void VerifyBatteryHibernateFormatting()
+        {
+            Assert(BatteryHibernate.ManagedTimeoutSeconds == 1800,
+                "The managed battery timeout should be 30 minutes.");
+            Assert(BatteryHibernate.FormatTimeout(0) == "Never",
+                "A zero timeout should be shown as Never.");
+            Assert(BatteryHibernate.FormatTimeout(1800) == "30 min",
+                "The managed timeout should be shown in minutes.");
+            Assert(BatteryHibernate.FormatTimeout(5400) == "90 min",
+                "A fractional-hour timeout should be shown in minutes.");
+            Assert(BatteryHibernate.FormatTimeout(7200) == "2 hours",
+                "Whole-hour timeouts should be shown in hours.");
+        }
+
+        private static void VerifyModernStandbyNetworkFormatting()
+        {
+            Assert(ModernStandbyNetwork.FormatPolicy(
+                ModernStandbyNetwork.Disabled) == "Disconnected",
+                "A disabled standby network should be shown as disconnected.");
+            Assert(ModernStandbyNetwork.FormatPolicy(
+                ModernStandbyNetwork.Enabled) == "Connected",
+                "An enabled standby network should be shown as connected.");
+            Assert(ModernStandbyNetwork.FormatPolicy(
+                ModernStandbyNetwork.WindowsManaged) == "Managed by Windows",
+                "The automatic standby policy should be shown as Windows-managed.");
         }
 
         private static void Assert(bool condition, string message)
