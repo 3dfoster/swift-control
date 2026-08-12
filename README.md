@@ -5,7 +5,11 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
 - read and toggle Acer's 80% optimized battery charging mode;
 - show charge and AC state;
 - select Silent, Normal, or Performance firmware mode;
+- read and set Windows 11 Best power efficiency, Balanced, or Best performance
+  mode for the active power source;
 - follow mode changes made by AcerSense or the keyboard;
+- automatically choose a mode when plugged in, unplugged, or below a chosen
+  battery percentage;
 - show a lightweight OSD after a verified power-mode change;
 - use a mode-specific notification-area icon;
 - optionally launch quietly in the notification area at Windows sign-in.
@@ -20,6 +24,9 @@ analytics. The launch-at-startup option uses the current user's standard Windows
 - Right-click it to open the panel, choose a mode, change the charging limit, or
   exit SwiftControl.
 - The panel closes when focus moves elsewhere.
+- Automatic power modes are opt-in. Configure a target for each power condition
+  in the panel, then enable the rules. A manual mode change remains active until
+  the power condition changes.
 - Charge-limit changes show a confirmation notification; failed operations show
   an error notification.
 
@@ -35,6 +42,12 @@ project.
 
 This release was developed and tested on an Acer Swift SF16-51T. Acer service
 commands and supported modes may differ on other models.
+
+## Technical notes
+
+- [Acer and Windows power-mode findings](docs/POWER-MODE-FINDINGS.md) records
+  the measured firmware limits, benchmark matrices, control-layer behavior,
+  testing pitfalls, and remaining unknowns for the SF16-51T.
 
 ## Build
 
