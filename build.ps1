@@ -42,6 +42,7 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
     "$source\TrayController.cs" `
+    "$source\TrustedWifiWindow.cs" `
     "$source\TouchpadLightingSettings.cs" `
     "$source\WindowsPowerMode.cs" `
     "$source\Program.cs"

@@ -43,10 +43,10 @@ namespace SwiftControl
         // height so the flyout cannot be covered during that transition.
         private const double TaskbarReserve = 48;
 
-        private readonly Brush _background = Brush("#0B0E14");
-        private readonly Brush _pageSurface = Brush("#11161E");
-        private readonly Brush _card = Brush("#151A22");
-        private readonly Brush _cardBorder = Brush("#252C38");
+        private readonly Brush _background = Brush("#05080D");
+        private readonly Brush _pageSurface = Brush("#101B29");
+        private readonly Brush _card = Brush("#223247");
+        private readonly Brush _cardBorder = Brush("#34465C");
         private readonly Brush _text = Brush("#F4F6F8");
         private readonly Brush _muted = Brush("#DEE3EA");
         private readonly Brush _accent = Brush("#7DD3A7");
@@ -66,6 +66,7 @@ namespace SwiftControl
         private readonly ToggleButton[] _lockAfterSuspendModes =
             new ToggleButton[3];
         private Button _trustCurrentWifi;
+        private Button _manageTrustedWifi;
         private TextBlock _lockAfterSuspendStatus;
         private ToggleButton _batteryTab;
         private ToggleButton _touchpadTab;
@@ -130,6 +131,9 @@ namespace SwiftControl
         private HwndSource _windowSource;
         private IntPtr _suspendResumeRegistration;
         private bool _suppressMonitorTracking;
+        private bool _focusDismissQueued;
+        private bool _openingTrustedWifiWindow;
+        private TrustedWifiWindow _trustedWifiWindow;
 
         public event Action<int> PowerModeObserved;
         public event Action<int> PowerProfileObserved;
@@ -266,7 +270,7 @@ namespace SwiftControl
             tabChrome.Padding = new Thickness(2, 2, 2, 0);
             tabChrome.Background = _background;
             tabChrome.BorderBrush = _cardBorder;
-            tabChrome.BorderThickness = new Thickness(1);
+            tabChrome.BorderThickness = new Thickness(1, 1, 1, 0);
             tabChrome.CornerRadius = new CornerRadius(9, 9, 0, 0);
             UniformGrid tabs = new UniformGrid { Rows = 1 };
             _batteryTab = CreatePanelTab("Battery", "battery");
@@ -393,7 +397,21 @@ namespace SwiftControl
             _trustCurrentWifi.ToolTip =
                 "Toggle whether the current Windows Wi-Fi profile is trusted";
             _trustCurrentWifi.Click += TrustCurrentWifiClicked;
-            battery.Children.Add(_trustCurrentWifi);
+
+            StackPanel wifiActions = new StackPanel();
+            wifiActions.Orientation = Orientation.Horizontal;
+            wifiActions.Margin = new Thickness(0, 7, 0, 0);
+            _trustCurrentWifi.Margin = new Thickness(0);
+            wifiActions.Children.Add(_trustCurrentWifi);
+            _manageTrustedWifi = Button("Manage trusted Wi-Fi  ›");
+            _manageTrustedWifi.Height = 29;
+            _manageTrustedWifi.Margin = new Thickness(7, 0, 0, 0);
+            _manageTrustedWifi.Padding = new Thickness(10, 0, 10, 1);
+            _manageTrustedWifi.FontSize = 11;
+            _manageTrustedWifi.ToolTip = "View and remove trusted Wi-Fi networks";
+            _manageTrustedWifi.Click += ManageTrustedWifiClicked;
+            wifiActions.Children.Add(_manageTrustedWifi);
+            battery.Children.Add(wifiActions);
 
             _lockAfterSuspendStatus = Text(
                 "Reading current Wi-Fi…", 10, FontWeights.Normal, _muted);
@@ -1304,6 +1322,7 @@ namespace SwiftControl
             }
             else
             {
+                CloseTrustedWifiManager();
                 _modePoll.Interval = TimeSpan.FromSeconds(30);
                 if (IsLoaded) _modePoll.Start();
                 _dashboardPoll.Stop();
@@ -1456,8 +1475,35 @@ namespace SwiftControl
 
         private void PanelDeactivated(object sender, EventArgs e)
         {
-            if (_allowClose || !IsVisible) return;
-            Hide();
+            if (_allowClose || !IsVisible || _openingTrustedWifiWindow) return;
+            QueueFocusDismiss();
+        }
+
+        private void QueueFocusDismiss()
+        {
+            if (_focusDismissQueued || _openingTrustedWifiWindow) return;
+            _focusDismissQueued = true;
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,
+                new Action(delegate
+                {
+                    _focusDismissQueued = false;
+                    if (_allowClose || !IsVisible || IsActive ||
+                        _openingTrustedWifiWindow) return;
+                    if (_trustedWifiWindow != null && _trustedWifiWindow.IsActive) return;
+                    CloseTrustedWifiManager();
+                    Hide();
+                }));
+        }
+
+        private void CloseTrustedWifiManager()
+        {
+            TrustedWifiWindow manager = _trustedWifiWindow;
+            _trustedWifiWindow = null;
+            if (manager != null)
+            {
+                manager.FocusLeft -= QueueFocusDismiss;
+                manager.Close();
+            }
         }
 
         public void ExitApplication()
@@ -1476,6 +1522,7 @@ namespace SwiftControl
             }
             _modePoll.Stop();
             _dashboardPoll.Stop();
+            CloseTrustedWifiManager();
             SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
             base.OnClosing(e);
         }
@@ -2116,6 +2163,35 @@ namespace SwiftControl
             RefreshLockAfterSuspendDisplay();
         }
 
+        private void ManageTrustedWifiClicked(object sender, RoutedEventArgs e)
+        {
+            if (_trustedWifiWindow != null)
+            {
+                _trustedWifiWindow.RefreshNetworks();
+                _trustedWifiWindow.Activate();
+                return;
+            }
+
+            TrustedWifiWindow manager = new TrustedWifiWindow(
+                _lockSettings, delegate { RefreshLockAfterSuspendDisplay(); });
+            _trustedWifiWindow = manager;
+            manager.Owner = this;
+            manager.ShowActivated = true;
+            manager.FocusLeft += QueueFocusDismiss;
+            manager.Closed += delegate
+            {
+                manager.FocusLeft -= QueueFocusDismiss;
+                if (ReferenceEquals(_trustedWifiWindow, manager))
+                    _trustedWifiWindow = null;
+            };
+            _openingTrustedWifiWindow = true;
+            manager.Show();
+            manager.PositionNextTo(_manageTrustedWifi, this);
+            manager.Activate();
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,
+                new Action(delegate { _openingTrustedWifiWindow = false; }));
+        }
+
         private void SaveLockAfterSuspendSettings()
         {
             try { _lockSettings.Save(); }
@@ -2147,6 +2223,8 @@ namespace SwiftControl
             }
 
             _trustCurrentWifi.Visibility = smart
+                ? Visibility.Visible : Visibility.Collapsed;
+            _manageTrustedWifi.Visibility = smart
                 ? Visibility.Visible : Visibility.Collapsed;
             _trustCurrentWifi.IsEnabled = _currentWifi != null;
             if (_currentWifi != null)
@@ -2182,6 +2260,8 @@ namespace SwiftControl
                 _lockAfterSuspendStatus.Text = "Smart: " + _currentWifi.Name +
                     " is untrusted. The next resume locks.";
             }
+            if (_trustedWifiWindow != null)
+                _trustedWifiWindow.RefreshNetworks();
         }
 
         private async void AutomationEnabledChanged(object sender, RoutedEventArgs e)
@@ -3100,6 +3180,8 @@ namespace SwiftControl
             }
             if (_trustCurrentWifi != null)
                 _trustCurrentWifi.IsEnabled = enabled && _currentWifi != null;
+            if (_manageTrustedWifi != null)
+                _manageTrustedWifi.IsEnabled = enabled;
             if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {

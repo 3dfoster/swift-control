@@ -138,6 +138,29 @@ namespace SwiftControl
             }
         }
 
+        public WifiConnection[] TrustedWifiNetworks()
+        {
+            lock (_sync)
+            {
+                WifiConnection[] networks = new WifiConnection[_trustedWifi.Count];
+                int index = 0;
+                foreach (string id in _trustedWifi)
+                    networks[index++] = new WifiConnection(id, DisplayName(id));
+                Array.Sort(networks, delegate(WifiConnection left, WifiConnection right)
+                {
+                    return StringComparer.CurrentCultureIgnoreCase.Compare(
+                        left.Name, right.Name);
+                });
+                return networks;
+            }
+        }
+
+        public void RemoveTrusted(string id)
+        {
+            if (String.IsNullOrWhiteSpace(id)) return;
+            lock (_sync) _trustedWifi.Remove(id);
+        }
+
         public LockAfterSuspendDecision Evaluate(WifiConnection wifi)
         {
             lock (_sync)
@@ -177,6 +200,14 @@ namespace SwiftControl
         private static int ValidMode(int mode)
         {
             return mode >= Off && mode <= AlwaysMode ? mode : Off;
+        }
+
+        private static string DisplayName(string id)
+        {
+            int separator = (id ?? "").IndexOf('|');
+            if (separator >= 0 && separator + 1 < id.Length)
+                return id.Substring(separator + 1);
+            return String.IsNullOrWhiteSpace(id) ? "Unknown Wi-Fi" : id;
         }
     }
 
