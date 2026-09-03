@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
@@ -27,8 +28,14 @@ namespace SwiftControl
         private const int WmSettingChange = 0x001A;
         private const int WmDisplayChange = 0x007E;
         private const int WmDpiChanged = 0x02E0;
+        private const int WmPowerBroadcast = 0x0218;
+        private const int PbtApmSuspend = 0x0004;
+        private const int PbtApmResumeSuspend = 0x0007;
+        private const int PbtApmResumeAutomatic = 0x0012;
         private const uint SwpNoZOrder = 0x0004;
         private const uint SwpNoActivate = 0x0010;
+        private const int DwmWindowCornerPreference = 33;
+        private const int DwmWindowCornerRound = 2;
         private const int StartupServiceWaitSeconds = 90;
         private const int StartupServiceRetrySeconds = 3;
 
@@ -51,6 +58,18 @@ namespace SwiftControl
         private TextBlock _batteryHibernateStatus;
         private ToggleButton _standbyNetwork;
         private TextBlock _standbyNetworkStatus;
+        private readonly ToggleButton[] _lockAfterSuspendModes =
+            new ToggleButton[3];
+        private Button _trustCurrentWifi;
+        private TextBlock _lockAfterSuspendStatus;
+        private ToggleButton _batteryTab;
+        private ToggleButton _touchpadTab;
+        private FrameworkElement _batteryPage;
+        private FrameworkElement _touchpadPage;
+        private ToggleButton _touchpadGlobal;
+        private TextBlock _touchpadStatus;
+        private ToggleButton _codexLighting;
+        private UniformGrid _codexEffects;
         private TextBlock _profileTitle;
         private TextBlock _profileSummary;
         private ToggleButton _advancedToggle;
@@ -68,6 +87,10 @@ namespace SwiftControl
         private Button _resumeAutomation;
         private Button _closeAcerSense;
         private readonly PowerAutomationSettings _automationSettings;
+        private readonly TouchpadLightingSettings _lightingSettings;
+        private readonly LockAfterSuspendSettings _lockSettings;
+        private WifiConnection _currentWifi;
+        private bool _lockOnNextResume;
         private int _currentPowerMode = -1;
         private int _currentWindowsPowerMode = -1;
         private int _lastAutomationCondition = -1;
@@ -89,8 +112,19 @@ namespace SwiftControl
         private bool _changingWindowsPowerMode;
         private bool _changingBatteryHibernate;
         private bool _changingStandbyNetwork;
+        private bool _changingTouchpadGlobal;
+        private bool _refreshingTouchpad;
+        private bool _refreshingWindowsPowerMode;
+        private bool _refreshingBatteryHibernate;
+        private bool _refreshingStandbyNetwork;
+        private bool _refreshingTrayState;
+        private bool _visibleRefreshRunning;
+        private bool _visibleRefreshRequested;
+        private int _lightingPreviewGeneration;
         private IntPtr _targetMonitor;
         private HwndSource _windowSource;
+        private IntPtr _suspendResumeRegistration;
+        private bool _suppressMonitorTracking;
 
         public event Action<int> PowerModeObserved;
         public event Action<int> PowerProfileObserved;
@@ -101,6 +135,8 @@ namespace SwiftControl
         public MainWindow()
         {
             _automationSettings = PowerAutomationSettings.Load();
+            _lightingSettings = TouchpadLightingSettings.Load();
+            _lockSettings = LockAfterSuspendSettings.Load();
             Title = "SwiftControl";
             MinWidth = 320;
             MinHeight = 240;
@@ -108,9 +144,12 @@ namespace SwiftControl
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             SizeToContent = SizeToContent.Height;
-            AllowsTransparency = true;
+            // A transparent WPF window becomes a large software-composited
+            // surface on a scaled display and can disrupt hardware video.
+            // Keep the window accelerated and let DWM round it instead.
+            AllowsTransparency = false;
             ShowInTaskbar = false;
-            Background = Brushes.Transparent;
+            Background = _background;
             Foreground = _text;
             FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
@@ -145,6 +184,7 @@ namespace SwiftControl
 
             Grid root = new Grid();
             root.Margin = new Thickness(20, 16, 20, 15);
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             shell.Child = root;
@@ -216,20 +256,39 @@ namespace SwiftControl
             heading.Children.Add(actions);
             root.Children.Add(heading);
 
+            Border tabChrome = new Border();
+            tabChrome.Margin = new Thickness(0, 13, 0, 0);
+            tabChrome.Padding = new Thickness(3);
+            tabChrome.Background = Brush("#11161E");
+            tabChrome.BorderBrush = _cardBorder;
+            tabChrome.BorderThickness = new Thickness(1);
+            tabChrome.CornerRadius = new CornerRadius(11);
+            UniformGrid tabs = new UniformGrid { Rows = 1 };
+            _batteryTab = CreatePanelTab("Battery", "battery");
+            _touchpadTab = CreatePanelTab("Touchpad light", "touchpad");
+            tabs.Children.Add(_batteryTab);
+            tabs.Children.Add(_touchpadTab);
+            tabChrome.Child = tabs;
+            Grid.SetRow(tabChrome, 1);
+            root.Children.Add(tabChrome);
+
             ScrollViewer bodyScroll = new ScrollViewer();
             bodyScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
             bodyScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            bodyScroll.Margin = new Thickness(0, 14, 0, 0);
-            Grid.SetRow(bodyScroll, 1);
+            bodyScroll.Margin = new Thickness(0, 10, 0, 0);
+            Grid.SetRow(bodyScroll, 2);
             root.Children.Add(bodyScroll);
 
             Grid body = new Grid();
             body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             bodyScroll.Content = body;
 
+            StackPanel batteryPage = new StackPanel();
+            _batteryPage = batteryPage;
             Border batteryCard = Card();
             StackPanel battery = new StackPanel();
             batteryCard.Child = battery;
+            batteryPage.Children.Add(batteryCard);
 
             Grid batteryHeader = new Grid();
             batteryHeader.ColumnDefinitions.Add(new ColumnDefinition());
@@ -273,8 +332,76 @@ namespace SwiftControl
             _progress.Background = Brush("#28303B");
             battery.Children.Add(_progress);
 
+            Border lockCard = Card();
+            lockCard.Margin = new Thickness(0, 8, 0, 0);
+            StackPanel lockSection = new StackPanel();
+            lockCard.Child = lockSection;
+            batteryPage.Children.Add(lockCard);
+            battery = lockSection;
+
+            Grid lockHeader = new Grid();
+            TextBlock lockHeading = Text(
+                "LOCK AFTER SUSPEND", 11, FontWeights.SemiBold, _muted);
+            lockHeading.VerticalAlignment = VerticalAlignment.Center;
+            lockHeader.Children.Add(lockHeading);
+            battery.Children.Add(lockHeader);
+
+            UniformGrid lockModes = new UniformGrid();
+            lockModes.Rows = 1;
+            lockModes.Margin = new Thickness(0, 7, 0, 0);
+            string[] lockModeNames = { "Off", "Smart", "Always" };
+            string[] lockModeTips =
+            {
+                "Do not lock after suspend",
+                "Lock unless the connected Wi-Fi is trusted",
+                "Always show the Windows lock screen after suspend or hibernate"
+            };
+            for (int mode = 0; mode < lockModeNames.Length; mode++)
+            {
+                ToggleButton button = new ToggleButton();
+                button.Content = lockModeNames[mode];
+                button.Tag = mode;
+                button.MinHeight = 34;
+                button.FontSize = 11;
+                button.FontWeight = FontWeights.SemiBold;
+                button.BorderThickness = new Thickness(1);
+                button.Margin = new Thickness(mode == 0 ? 0 : 3, 0,
+                    mode == lockModeNames.Length - 1 ? 0 : 3, 0);
+                button.Cursor = Cursors.Hand;
+                button.ToolTip = lockModeTips[mode];
+                AutomationProperties.SetName(button,
+                    lockModeNames[mode] + " lock after suspend");
+                button.Click += LockAfterSuspendModeClicked;
+                _lockAfterSuspendModes[mode] = button;
+                lockModes.Children.Add(button);
+            }
+            battery.Children.Add(lockModes);
+
+            _trustCurrentWifi = Button("Trust current Wi-Fi");
+            _trustCurrentWifi.Height = 29;
+            _trustCurrentWifi.Margin = new Thickness(0, 7, 0, 0);
+            _trustCurrentWifi.HorizontalAlignment = HorizontalAlignment.Left;
+            _trustCurrentWifi.Padding = new Thickness(10, 0, 10, 1);
+            _trustCurrentWifi.FontSize = 11;
+            _trustCurrentWifi.ToolTip =
+                "Toggle whether the current Windows Wi-Fi profile is trusted";
+            _trustCurrentWifi.Click += TrustCurrentWifiClicked;
+            battery.Children.Add(_trustCurrentWifi);
+
+            _lockAfterSuspendStatus = Text(
+                "Reading current Wi-Fi…", 10, FontWeights.Normal, _muted);
+            _lockAfterSuspendStatus.Margin = new Thickness(0, 5, 0, 0);
+            _lockAfterSuspendStatus.TextWrapping = TextWrapping.Wrap;
+            battery.Children.Add(_lockAfterSuspendStatus);
+
+            Border profileCard = Card();
+            profileCard.Margin = new Thickness(0, 8, 0, 0);
+            StackPanel profileSection = new StackPanel();
+            profileCard.Child = profileSection;
+            batteryPage.Children.Add(profileCard);
+            battery = profileSection;
+
             Grid profileHeader = new Grid();
-            profileHeader.Margin = new Thickness(0, 13, 0, 0);
             profileHeader.ColumnDefinitions.Add(new ColumnDefinition());
             profileHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             TextBlock profileHeading = Text("POWER PROFILE", 11, FontWeights.SemiBold, _muted);
@@ -600,9 +727,414 @@ namespace SwiftControl
             UpdatePowerProfileDisplay();
             UpdateAutomationVisuals();
 
-            body.Children.Add(batteryCard);
+            body.Children.Add(batteryPage);
+            _touchpadPage = BuildTouchpadPage();
+            body.Children.Add(_touchpadPage);
+            SelectPanelTab("battery");
 
             return shell;
+        }
+
+        private ToggleButton CreatePanelTab(string label, string tag)
+        {
+            ToggleButton button = new ToggleButton();
+            button.Content = label;
+            button.Tag = tag;
+            button.Height = 34;
+            button.Margin = new Thickness(2);
+            button.FontSize = 12;
+            button.FontWeight = FontWeights.SemiBold;
+            button.BorderThickness = new Thickness(1);
+            button.Cursor = Cursors.Hand;
+            button.Template = CreateToggleButtonTemplate(8);
+            button.Click += PanelTabClicked;
+            return button;
+        }
+
+        private async void PanelTabClicked(object sender, RoutedEventArgs e)
+        {
+            ToggleButton button = sender as ToggleButton;
+            if (button == null) return;
+            SelectPanelTab(Convert.ToString(button.Tag));
+            UpdateLayout();
+            PositionBottomRight();
+            if (button == _touchpadTab) await RefreshTouchpadAsync(false);
+        }
+
+        private void SelectPanelTab(string tab)
+        {
+            bool touchpad = String.Equals(tab, "touchpad", StringComparison.Ordinal);
+            if (_batteryPage != null)
+                _batteryPage.Visibility = touchpad ? Visibility.Collapsed : Visibility.Visible;
+            if (_touchpadPage != null)
+                _touchpadPage.Visibility = touchpad ? Visibility.Visible : Visibility.Collapsed;
+            SetTabDisplay(_batteryTab, !touchpad);
+            SetTabDisplay(_touchpadTab, touchpad);
+        }
+
+        private void SetTabDisplay(ToggleButton button, bool selected)
+        {
+            if (button == null) return;
+            button.IsChecked = selected;
+            button.Background = selected ? _accent : Brushes.Transparent;
+            button.Foreground = selected ? _background : _muted;
+            button.BorderBrush = selected ? _accent : Brushes.Transparent;
+        }
+
+        private Border BuildTouchpadPage()
+        {
+            Border card = Card();
+            StackPanel panel = new StackPanel();
+            card.Child = panel;
+
+            Grid header = new Grid();
+            header.ColumnDefinitions.Add(new ColumnDefinition());
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock heading = Text("ACTIVITY INDICATOR", 11, FontWeights.SemiBold, _muted);
+            heading.VerticalAlignment = VerticalAlignment.Center;
+            header.Children.Add(heading);
+            _touchpadGlobal = CreateLightingToggle("Enabled");
+            _touchpadGlobal.ToolTip = "Enable or disable Acer's global touchpad light switch";
+            _touchpadGlobal.Click += TouchpadGlobalClicked;
+            Grid.SetColumn(_touchpadGlobal, 1);
+            header.Children.Add(_touchpadGlobal);
+            panel.Children.Add(header);
+
+            _touchpadStatus = Text(
+                "Reading Acer lighting service…", 10, FontWeights.Normal, _muted);
+            _touchpadStatus.Margin = new Thickness(0, 6, 0, 0);
+            _touchpadStatus.TextWrapping = TextWrapping.Wrap;
+            panel.Children.Add(_touchpadStatus);
+
+            panel.Children.Add(CreateLightingSectionHeader(
+                "CODEX COMPLETION", "Play an effect when an agent turn completes",
+                out _codexLighting, LightingOptionClicked));
+            TextBlock codexDescription = Text(
+                "Uses Codex's supported agent-turn-complete notify hook. " +
+                "Choosing an effect previews it immediately.",
+                10, FontWeights.Normal, _muted);
+            codexDescription.Margin = new Thickness(0, 5, 0, 0);
+            panel.Children.Add(codexDescription);
+            _codexEffects = CreateEffectPicker(_lightingSettings.CodexEffect);
+            panel.Children.Add(_codexEffects);
+
+            TextBlock previewHeading = Text("PREVIEW", 11, FontWeights.SemiBold, _muted);
+            previewHeading.Margin = new Thickness(0, 16, 0, 0);
+            panel.Children.Add(previewHeading);
+            UniformGrid previews = new UniformGrid { Rows = 1 };
+            previews.Margin = new Thickness(0, 8, 0, 0);
+            Button previewCodex = CreatePreviewButton("Replay selected", "codex");
+            Button stop = CreatePreviewButton("Stop", "stop");
+            stop.Background = Brush("#3A2028");
+            stop.BorderBrush = Brush("#79404C");
+            previews.Children.Add(previewCodex);
+            previews.Children.Add(stop);
+            panel.Children.Add(previews);
+
+            UpdateLightingSettingsVisuals();
+            return card;
+        }
+
+        private Grid CreateLightingSectionHeader(
+            string title, string tooltip, out ToggleButton toggle,
+            RoutedEventHandler handler)
+        {
+            Grid header = new Grid();
+            header.Margin = new Thickness(0, 16, 0, 0);
+            header.ColumnDefinitions.Add(new ColumnDefinition());
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock heading = Text(title, 11, FontWeights.SemiBold, _muted);
+            heading.VerticalAlignment = VerticalAlignment.Center;
+            header.Children.Add(heading);
+            toggle = CreateLightingToggle("On");
+            toggle.ToolTip = tooltip;
+            toggle.Click += handler;
+            Grid.SetColumn(toggle, 1);
+            header.Children.Add(toggle);
+            return header;
+        }
+
+        private ToggleButton CreateLightingToggle(string content)
+        {
+            ToggleButton toggle = new ToggleButton();
+            toggle.Content = content;
+            toggle.Height = 29;
+            toggle.Padding = new Thickness(11, 0, 11, 1);
+            toggle.FontSize = 11;
+            toggle.FontWeight = FontWeights.SemiBold;
+            toggle.BorderThickness = new Thickness(1);
+            toggle.Cursor = Cursors.Hand;
+            toggle.Template = CreateToggleButtonTemplate(9);
+            return toggle;
+        }
+
+        private UniformGrid CreateEffectPicker(string selectedEffect)
+        {
+            UniformGrid picker = new UniformGrid { Rows = 1 };
+            picker.Margin = new Thickness(0, 8, 0, 0);
+            string[] effects =
+            {
+                AcerLightingEffects.Blink,
+                AcerLightingEffects.Breath,
+                AcerLightingEffects.Circle,
+                AcerLightingEffects.Twinkle
+            };
+            string[] labels = { "Blink", "Breath", "Circle", "Twinkle" };
+            for (int index = 0; index < effects.Length; index++)
+            {
+                ToggleButton button = new ToggleButton();
+                button.Content = labels[index];
+                button.Tag = effects[index];
+                button.Height = 34;
+                button.FontSize = 11;
+                button.FontWeight = FontWeights.SemiBold;
+                button.BorderThickness = new Thickness(1);
+                button.Margin = new Thickness(index == 0 ? 0 : 3, 0,
+                    index == effects.Length - 1 ? 0 : 3, 0);
+                button.Cursor = Cursors.Hand;
+                button.Template = CreateToggleButtonTemplate(8);
+                button.Click += LightingEffectClicked;
+                picker.Children.Add(button);
+            }
+            return picker;
+        }
+
+        private Button CreatePreviewButton(string label, string target)
+        {
+            Button button = Button(label);
+            button.Tag = target;
+            button.Height = 34;
+            button.Margin = new Thickness(3, 0, 3, 0);
+            button.FontSize = 11;
+            button.FontWeight = FontWeights.SemiBold;
+            button.Cursor = Cursors.Hand;
+            button.Click += LightingPreviewClicked;
+            return button;
+        }
+
+        private void LightingOptionClicked(object sender, RoutedEventArgs e)
+        {
+            _lightingSettings.CodexEnabled = _codexLighting.IsChecked == true;
+            try
+            {
+                _lightingSettings.Save();
+            }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save touchpad-light settings: " + exception.Message);
+            }
+            UpdateLightingSettingsVisuals();
+        }
+
+        private async void LightingEffectClicked(object sender, RoutedEventArgs e)
+        {
+            ToggleButton button = sender as ToggleButton;
+            if (button == null) return;
+            _lightingSettings.CodexEffect = Convert.ToString(button.Tag);
+            try { _lightingSettings.Save(); }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save touchpad-light effect: " + exception.Message);
+            }
+            UpdateLightingSettingsVisuals();
+            await PreviewLightingAsync(_lightingSettings.CodexEffect);
+        }
+
+        private void UpdateLightingSettingsVisuals()
+        {
+            SetLightingToggleDisplay(_codexLighting, _lightingSettings.CodexEnabled);
+            SetEffectPickerDisplay(_codexEffects, _lightingSettings.CodexEffect);
+        }
+
+        private void SetLightingToggleDisplay(ToggleButton toggle, bool enabled)
+        {
+            if (toggle == null) return;
+            toggle.IsChecked = enabled;
+            toggle.Content = enabled ? "On" : "Off";
+            toggle.Background = enabled ? _accent : Brush("#202733");
+            toggle.Foreground = enabled ? _background : _text;
+            toggle.BorderBrush = enabled ? _accent : _cardBorder;
+        }
+
+        private void SetEffectPickerDisplay(UniformGrid picker, string selectedEffect)
+        {
+            if (picker == null) return;
+            foreach (UIElement element in picker.Children)
+            {
+                ToggleButton button = element as ToggleButton;
+                if (button == null) continue;
+                string tag = Convert.ToString(button.Tag);
+                bool selected = String.Equals(tag, selectedEffect, StringComparison.Ordinal);
+                button.IsChecked = selected;
+                button.Background = selected ? _accent : Brush("#202733");
+                button.Foreground = selected ? _background : _text;
+                button.BorderBrush = selected ? _accent : _cardBorder;
+            }
+        }
+
+        private async void TouchpadGlobalClicked(object sender, RoutedEventArgs e)
+        {
+            if (_changingTouchpadGlobal) return;
+            bool enabled = _touchpadGlobal.IsChecked == true;
+            Exception failure = null;
+            _changingTouchpadGlobal = true;
+            _touchpadGlobal.IsEnabled = false;
+            try
+            {
+                Tuple<int, bool> status = await Task.Run(new Func<Tuple<int, bool>>(delegate
+                {
+                    using (AcerLightingClient lighting = new AcerLightingClient())
+                    {
+                        lighting.Connect();
+                        lighting.SetEnabled(5, enabled);
+                        return Tuple.Create(lighting.Port, lighting.GetEnabled(5));
+                    }
+                }));
+                SetTouchpadGlobalDisplay(status.Item2, status.Item1);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+            finally
+            {
+                _changingTouchpadGlobal = false;
+                _touchpadGlobal.IsEnabled = true;
+            }
+            if (failure != null)
+            {
+                await RefreshTouchpadAsync(false);
+                ReportFailure("Could not change the touchpad light: " + failure.Message);
+            }
+        }
+
+        private async Task RefreshTouchpadAsync(bool reportFailure)
+        {
+            if (_touchpadGlobal == null || _changingTouchpadGlobal ||
+                _refreshingTouchpad) return;
+            _refreshingTouchpad = true;
+            try
+            {
+                Tuple<int, bool> status = await Task.Run(new Func<Tuple<int, bool>>(delegate
+                {
+                    using (AcerLightingClient lighting = new AcerLightingClient())
+                    {
+                        lighting.Connect();
+                        int[] devices = lighting.GetDevices();
+                        bool found = Array.IndexOf(devices, 5) >= 0;
+                        if (!found)
+                            throw new InvalidOperationException("Touchpad lighting device 5 was not found.");
+                        return Tuple.Create(lighting.Port, lighting.GetEnabled(5));
+                    }
+                }));
+                SetTouchpadGlobalDisplay(status.Item2, status.Item1);
+            }
+            catch (Exception exception)
+            {
+                _touchpadStatus.Text = "Acer touchpad lighting is unavailable.";
+                _touchpadGlobal.IsEnabled = false;
+                if (reportFailure)
+                    ReportFailure("Could not read the touchpad light: " + exception.Message);
+            }
+            finally
+            {
+                _refreshingTouchpad = false;
+            }
+        }
+
+        private void SetTouchpadGlobalDisplay(bool enabled, int port)
+        {
+            _touchpadGlobal.IsEnabled = true;
+            _touchpadGlobal.IsChecked = enabled;
+            _touchpadGlobal.Content = enabled ? "Enabled" : "Disabled";
+            _touchpadGlobal.Background = enabled ? _accent : Brush("#202733");
+            _touchpadGlobal.Foreground = enabled ? _background : _text;
+            _touchpadGlobal.BorderBrush = enabled ? _accent : _cardBorder;
+            _touchpadStatus.Text = "Connected on localhost:" +
+                port.ToString(CultureInfo.InvariantCulture) +
+                ". Touchpad activity indicator is " + (enabled ? "enabled." : "disabled.");
+        }
+
+        private async void LightingPreviewClicked(object sender, RoutedEventArgs e)
+        {
+            Button button = sender as Button;
+            string target = button == null ? "" : Convert.ToString(button.Tag);
+            if (target == "stop")
+            {
+                int generation = Interlocked.Increment(ref _lightingPreviewGeneration);
+                await TerminateLightingPreviewAsync(generation);
+                return;
+            }
+            await PreviewLightingAsync(_lightingSettings.CodexEffect);
+        }
+
+        private async Task PreviewLightingAsync(string effect)
+        {
+            int generation = Interlocked.Increment(ref _lightingPreviewGeneration);
+            Exception failure = null;
+            try
+            {
+                _touchpadStatus.Text = "Previewing " + effect.Replace("_R", "") + "…";
+                await Task.Run(new Action(delegate
+                {
+                    lock (AcerLightingClient.Synchronization)
+                    {
+                        if (generation != Volatile.Read(ref _lightingPreviewGeneration))
+                            return;
+                        using (AcerLightingClient lighting = new AcerLightingClient())
+                        {
+                            lighting.Connect();
+                            // Acer's animation engine does not reliably replace a
+                            // running effect. Stop the prior effect before every
+                            // preview so rapidly cycling choices cannot leave the
+                            // first animation playing.
+                            lighting.TerminateEffect();
+                            Thread.Sleep(75);
+                            if (generation != Volatile.Read(ref _lightingPreviewGeneration))
+                                return;
+                            lighting.PlayEffect(effect);
+                        }
+                    }
+                }));
+                await Task.Delay(TouchpadLightingSettings.PreviewDuration(effect));
+                if (generation != _lightingPreviewGeneration) return;
+                await TerminateLightingPreviewAsync(generation);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+            if (failure != null)
+            {
+                ReportFailure("Touchpad-light preview failed: " + failure.Message);
+                await RefreshTouchpadAsync(false);
+            }
+        }
+
+        private async Task TerminateLightingPreviewAsync(int generation)
+        {
+            try
+            {
+                await Task.Run(new Action(delegate
+                {
+                    lock (AcerLightingClient.Synchronization)
+                    {
+                        if (generation != Volatile.Read(ref _lightingPreviewGeneration))
+                            return;
+                        using (AcerLightingClient lighting = new AcerLightingClient())
+                        {
+                            lighting.Connect();
+                            lighting.TerminateEffect();
+                        }
+                    }
+                }));
+                if (generation == _lightingPreviewGeneration)
+                    await RefreshTouchpadAsync(false);
+            }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not stop the touchpad-light effect: " + exception.Message);
+            }
         }
 
         private StackPanel QuickProfileContent(PowerProfileOption profile)
@@ -691,11 +1223,7 @@ namespace SwiftControl
             UpdateLayout();
             PositionBottomRight();
             RefreshStartupDisplay();
-            await RefreshAsync();
-            await RefreshWindowsPowerModeAsync(true);
-            await RefreshBatteryHibernateAsync(true);
-            await RefreshStandbyNetworkAsync(true);
-            await EvaluateAutomationAsync(true, true);
+            await RefreshVisiblePanelAsync(true);
             UpdateAcerSenseCloseButton();
             _modePoll.Start();
             _dashboardPoll.Start();
@@ -711,7 +1239,7 @@ namespace SwiftControl
 
         private void PanelLocationChanged(object sender, EventArgs e)
         {
-            if (_positioning) return;
+            if (_positioning || _suppressMonitorTracking) return;
             IntPtr handle = new WindowInteropHelper(this).Handle;
             if (handle != IntPtr.Zero)
                 _targetMonitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
@@ -719,6 +1247,9 @@ namespace SwiftControl
 
         public async void StartHidden()
         {
+            // Create the invisible top-level HWND so registered Modern Standby
+            // notifications work even if the panel is never opened.
+            new WindowInteropHelper(this).EnsureHandle();
             RefreshStartupDisplay();
             _modePoll.Interval = TimeSpan.FromSeconds(30);
             DateTime deadline = DateTime.UtcNow.AddSeconds(StartupServiceWaitSeconds);
@@ -752,16 +1283,13 @@ namespace SwiftControl
         {
             if (IsVisible)
             {
-                _modePoll.Interval = TimeSpan.FromSeconds(2);
+                _modePoll.Interval = TimeSpan.FromSeconds(5);
                 _modePoll.Start();
                 _dashboardPoll.Start();
                 if (IsLoaded)
                 {
                     UpdateAcerSenseCloseButton();
-                    await RefreshAsync(false, false);
-                    await RefreshPowerModeAsync();
-                    await RefreshBatteryHibernateAsync(false);
-                    await RefreshStandbyNetworkAsync(false);
+                    await RefreshVisiblePanelAsync(false);
                 }
             }
             else
@@ -769,6 +1297,40 @@ namespace SwiftControl
                 _modePoll.Interval = TimeSpan.FromSeconds(30);
                 if (IsLoaded) _modePoll.Start();
                 _dashboardPoll.Stop();
+            }
+        }
+
+        private async Task RefreshVisiblePanelAsync(bool reportFailure)
+        {
+            _visibleRefreshRequested = true;
+            if (_visibleRefreshRunning) return;
+
+            _visibleRefreshRunning = true;
+            try
+            {
+                while (_visibleRefreshRequested && IsVisible)
+                {
+                    _visibleRefreshRequested = false;
+                    await RefreshAsync(reportFailure, false);
+                    if (!IsVisible) break;
+                    await RefreshWindowsPowerModeAsync(reportFailure);
+                    if (!IsVisible) break;
+                    await RefreshBatteryHibernateAsync(reportFailure);
+                    if (!IsVisible) break;
+                    await RefreshStandbyNetworkAsync(reportFailure);
+                    if (!IsVisible) break;
+                    RefreshLockAfterSuspendDisplay();
+                    if (!IsVisible) break;
+                    if (_touchpadPage != null &&
+                        _touchpadPage.Visibility == Visibility.Visible)
+                        await RefreshTouchpadAsync(reportFailure);
+                    if (!IsVisible) break;
+                    await EvaluateAutomationAsync(true, true);
+                }
+            }
+            finally
+            {
+                _visibleRefreshRunning = false;
             }
         }
 
@@ -780,7 +1342,11 @@ namespace SwiftControl
 
         private async void DashboardPollTick(object sender, EventArgs e)
         {
-            if (IsVisible) await RefreshAsync(false, false);
+            if (IsVisible)
+            {
+                await RefreshAsync(false, false);
+                RefreshLockAfterSuspendDisplay();
+            }
         }
 
         private async Task RefreshPowerModeAsync()
@@ -807,13 +1373,21 @@ namespace SwiftControl
                 _pollingMode = false;
             }
             await RefreshWindowsPowerModeAsync(false);
-            await RefreshBatteryHibernateAsync(false);
-            await RefreshStandbyNetworkAsync(false);
             await EvaluateAutomationAsync(false, false);
         }
 
         private void SystemPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
+            if (e.Mode == PowerModes.Suspend)
+            {
+                CaptureLockAfterSuspendDecision();
+                return;
+            }
+            if (e.Mode == PowerModes.Resume)
+            {
+                ApplyLockAfterResume();
+                return;
+            }
             if (e.Mode != PowerModes.StatusChange) return;
             try
             {
@@ -825,6 +1399,20 @@ namespace SwiftControl
             catch (InvalidOperationException) { }
         }
 
+        private void CaptureLockAfterSuspendDecision()
+        {
+            _lockOnNextResume = _lockSettings.EvaluateCurrent().ShouldLock;
+        }
+
+        private void ApplyLockAfterResume()
+        {
+            bool shouldLock = _lockOnNextResume;
+            _lockOnNextResume = false;
+            if (!shouldLock) return;
+            try { LockWorkStation(); }
+            catch { }
+        }
+
         private async void EvaluateAutomationFromPowerEvent()
         {
             await RefreshWindowsPowerModeAsync(false);
@@ -833,11 +1421,23 @@ namespace SwiftControl
 
         public void ShowFromTray()
         {
-            SelectMonitorAtCursor();
-            if (!IsVisible) Show();
-            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
-            UpdateLayout();
-            PositionBottomRight();
+            // Initial WPF placement can raise LocationChanged before our first
+            // explicit position. Preserve the monitor where the tray action
+            // occurred instead of replacing it with those default coordinates.
+            _suppressMonitorTracking = true;
+            try
+            {
+                SelectMonitorAtCursor();
+                if (!IsVisible) Show();
+                if (WindowState == WindowState.Minimized)
+                    WindowState = WindowState.Normal;
+                UpdateLayout();
+                PositionBottomRight();
+            }
+            finally
+            {
+                _suppressMonitorTracking = false;
+            }
             Activate();
             Topmost = true;
             Topmost = false;
@@ -873,8 +1473,25 @@ namespace SwiftControl
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            _windowSource = PresentationSource.FromVisual(this) as HwndSource;
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            try
+            {
+                int preference = DwmWindowCornerRound;
+                DwmSetWindowAttribute(handle, DwmWindowCornerPreference,
+                    ref preference, Marshal.SizeOf(typeof(int)));
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+
+            _windowSource = HwndSource.FromHwnd(handle);
             if (_windowSource != null) _windowSource.AddHook(WindowMessageHook);
+            try
+            {
+                PowerRegisterSuspendResumeNotification(
+                    handle, 0, out _suspendResumeRegistration);
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
         }
 
         protected override void OnClosed(EventArgs e)
@@ -883,6 +1500,17 @@ namespace SwiftControl
             {
                 _windowSource.RemoveHook(WindowMessageHook);
                 _windowSource = null;
+            }
+            if (_suspendResumeRegistration != IntPtr.Zero)
+            {
+                try
+                {
+                    PowerUnregisterSuspendResumeNotification(
+                        _suspendResumeRegistration);
+                }
+                catch (DllNotFoundException) { }
+                catch (EntryPointNotFoundException) { }
+                _suspendResumeRegistration = IntPtr.Zero;
             }
             base.OnClosed(e);
         }
@@ -899,6 +1527,15 @@ namespace SwiftControl
             {
                 _targetMonitor = MonitorFromWindow(window, MonitorDefaultToNearest);
                 QueueReposition();
+            }
+            else if (message == WmPowerBroadcast)
+            {
+                int powerEvent = wParam.ToInt32();
+                if (powerEvent == PbtApmSuspend)
+                    CaptureLockAfterSuspendDecision();
+                else if (powerEvent == PbtApmResumeSuspend ||
+                    powerEvent == PbtApmResumeAutomatic)
+                    ApplyLockAfterResume();
             }
             return IntPtr.Zero;
         }
@@ -1045,8 +1682,23 @@ namespace SwiftControl
         private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
             int x, int y, int width, int height, uint flags);
 
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr window,
+            int attribute, ref int value, int valueSize);
+
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll")]
+        private static extern bool LockWorkStation();
+
+        [DllImport("powrprof.dll")]
+        private static extern uint PowerRegisterSuspendResumeNotification(
+            IntPtr recipient, uint flags, out IntPtr registrationHandle);
+
+        [DllImport("powrprof.dll")]
+        private static extern uint PowerUnregisterSuspendResumeNotification(
+            IntPtr registrationHandle);
 
         private async Task RefreshAsync(bool reportFailure = true, bool showBusyState = true)
         {
@@ -1305,7 +1957,8 @@ namespace SwiftControl
 
         private async Task RefreshBatteryHibernateAsync(bool reportFailure)
         {
-            if (_changingBatteryHibernate) return;
+            if (_changingBatteryHibernate || _refreshingBatteryHibernate) return;
+            _refreshingBatteryHibernate = true;
             try
             {
                 BatteryHibernateStatus status = await Task.Run(
@@ -1320,6 +1973,10 @@ namespace SwiftControl
                 if (reportFailure)
                     ReportFailure("Could not read the battery hibernate timeout: " +
                         exception.Message);
+            }
+            finally
+            {
+                _refreshingBatteryHibernate = false;
             }
         }
 
@@ -1373,7 +2030,8 @@ namespace SwiftControl
 
         private async Task RefreshStandbyNetworkAsync(bool reportFailure)
         {
-            if (_changingStandbyNetwork) return;
+            if (_changingStandbyNetwork || _refreshingStandbyNetwork) return;
+            _refreshingStandbyNetwork = true;
             try
             {
                 ModernStandbyNetworkStatus status = await Task.Run(
@@ -1389,6 +2047,10 @@ namespace SwiftControl
                 if (reportFailure)
                     ReportFailure("Could not read the standby-network policy: " +
                         exception.Message);
+            }
+            finally
+            {
+                _refreshingStandbyNetwork = false;
             }
         }
 
@@ -1406,6 +2068,107 @@ namespace SwiftControl
                 ModernStandbyNetwork.FormatPolicy(status.BatteryPolicy) +
                 ". Plugged in: " +
                 ModernStandbyNetwork.FormatPolicy(status.PluggedInPolicy) + ".";
+        }
+
+        private void LockAfterSuspendModeClicked(object sender, RoutedEventArgs e)
+        {
+            ToggleButton button = sender as ToggleButton;
+            if (button == null || button.Tag == null) return;
+            _lockSettings.Mode = Convert.ToInt32(
+                button.Tag, CultureInfo.InvariantCulture);
+            SaveLockAfterSuspendSettings();
+            RefreshLockAfterSuspendDisplay();
+            UpdateLayout();
+            PositionBottomRight();
+        }
+
+        private void TrustCurrentWifiClicked(object sender, RoutedEventArgs e)
+        {
+            WifiConnection wifi = WifiNetwork.Current();
+            if (wifi == null)
+            {
+                RefreshLockAfterSuspendDisplay();
+                ReportFailure("No connected Wi-Fi is available to trust.");
+                return;
+            }
+            try
+            {
+                _lockSettings.SetTrusted(wifi, !_lockSettings.IsTrusted(wifi));
+                _lockSettings.Save();
+            }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save the trusted Wi-Fi: " + exception.Message);
+            }
+            RefreshLockAfterSuspendDisplay();
+        }
+
+        private void SaveLockAfterSuspendSettings()
+        {
+            try { _lockSettings.Save(); }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save the lock-after-suspend setting: " +
+                    exception.Message);
+            }
+        }
+
+        private void RefreshLockAfterSuspendDisplay()
+        {
+            if (_lockAfterSuspendModes[0] == null) return;
+            _currentWifi = WifiNetwork.Current();
+            int selectedMode = _lockSettings.Mode;
+            bool always = selectedMode == LockAfterSuspendSettings.AlwaysMode;
+            bool smart = selectedMode == LockAfterSuspendSettings.SmartMode;
+            bool trusted = _lockSettings.IsTrusted(_currentWifi);
+
+            for (int mode = 0; mode < _lockAfterSuspendModes.Length; mode++)
+            {
+                ToggleButton button = _lockAfterSuspendModes[mode];
+                if (button == null) continue;
+                bool selected = mode == selectedMode;
+                button.IsChecked = selected;
+                button.Background = selected ? _accent : Brush("#202733");
+                button.Foreground = selected ? _background : _text;
+                button.BorderBrush = selected ? _accent : _cardBorder;
+            }
+
+            _trustCurrentWifi.Visibility = smart
+                ? Visibility.Visible : Visibility.Collapsed;
+            _trustCurrentWifi.IsEnabled = _currentWifi != null;
+            if (_currentWifi != null)
+                _trustCurrentWifi.Content = trusted
+                    ? "Forget " + _currentWifi.Name
+                    : "Trust " + _currentWifi.Name;
+            else
+                _trustCurrentWifi.Content = "No Wi-Fi connected";
+
+            if (_lockAfterSuspendStatus == null) return;
+            if (always)
+            {
+                _lockAfterSuspendStatus.Text =
+                    "Always: the next resume locks.";
+            }
+            else if (!smart)
+            {
+                _lockAfterSuspendStatus.Text =
+                    "Off: suspend and resume without locking.";
+            }
+            else if (_currentWifi == null)
+            {
+                _lockAfterSuspendStatus.Text =
+                    "Smart: no connected Wi-Fi is trusted. The next resume locks.";
+            }
+            else if (trusted)
+            {
+                _lockAfterSuspendStatus.Text = "Smart: " + _currentWifi.Name +
+                    " is trusted. Resume stays unlocked.";
+            }
+            else
+            {
+                _lockAfterSuspendStatus.Text = "Smart: " + _currentWifi.Name +
+                    " is untrusted. The next resume locks.";
+            }
         }
 
         private async void AutomationEnabledChanged(object sender, RoutedEventArgs e)
@@ -1897,7 +2660,8 @@ namespace SwiftControl
 
         private async Task RefreshWindowsPowerModeAsync(bool reportFailure)
         {
-            if (_changingWindowsPowerMode) return;
+            if (_changingWindowsPowerMode || _refreshingWindowsPowerMode) return;
+            _refreshingWindowsPowerMode = true;
             try
             {
                 PowerSourceSnapshot source = await Task.Run(
@@ -1914,6 +2678,10 @@ namespace SwiftControl
             {
                 if (reportFailure)
                     ReportFailure("Could not read the Windows power mode: " + exception.Message);
+            }
+            finally
+            {
+                _refreshingWindowsPowerMode = false;
             }
         }
 
@@ -1997,7 +2765,8 @@ namespace SwiftControl
         private async Task<bool> RefreshTrayStateAsync(
             bool evaluateAutomation, bool reportFailure)
         {
-            if (_loading || _trayActionPending) return false;
+            if (_loading || _trayActionPending || _refreshingTrayState) return false;
+            _refreshingTrayState = true;
             bool refreshed = false;
             try
             {
@@ -2017,10 +2786,17 @@ namespace SwiftControl
                 if (reportFailure)
                     ReportFailure("Could not refresh tray controls: " + exception.Message);
             }
-            await RefreshWindowsPowerModeAsync(false);
-            if (refreshed && evaluateAutomation)
-                await EvaluateAutomationAsync(true, true);
-            return refreshed;
+            try
+            {
+                await RefreshWindowsPowerModeAsync(false);
+                if (refreshed && evaluateAutomation)
+                    await EvaluateAutomationAsync(true, true);
+                return refreshed;
+            }
+            finally
+            {
+                _refreshingTrayState = false;
+            }
         }
 
         private void ReportFailure(string message)
@@ -2304,6 +3080,13 @@ namespace SwiftControl
                 _batteryHibernate.IsEnabled = enabled;
             if (_standbyNetwork != null && !_changingStandbyNetwork)
                 _standbyNetwork.IsEnabled = enabled;
+            for (int mode = 0; mode < _lockAfterSuspendModes.Length; mode++)
+            {
+                if (_lockAfterSuspendModes[mode] != null)
+                    _lockAfterSuspendModes[mode].IsEnabled = enabled;
+            }
+            if (_trustCurrentWifi != null)
+                _trustCurrentWifi.IsEnabled = enabled && _currentWifi != null;
             if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {

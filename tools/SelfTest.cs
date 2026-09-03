@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace SwiftControl
 {
@@ -21,6 +22,23 @@ namespace SwiftControl
                 Console.WriteLine("Battery-hibernate timeout formatting verified.");
                 VerifyModernStandbyNetworkFormatting();
                 Console.WriteLine("Modern Standby network-policy formatting verified.");
+                VerifyLockAfterSuspendPolicy();
+                Console.WriteLine("Lock-after-suspend policy verified.");
+                WifiConnection wifi = WifiNetwork.Current();
+                Console.WriteLine("Wi-Fi: {0}",
+                    wifi == null ? "not connected" : wifi.Name);
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--lighting-probe", StringComparison.OrdinalIgnoreCase))
+                {
+                    ProbeLighting(false);
+                }
+
+                if (args.Length > 0 && String.Equals(
+                    args[0], "--lighting-blink", StringComparison.OrdinalIgnoreCase))
+                {
+                    ProbeLighting(true);
+                }
 
                 if (args.Length > 0 && String.Equals(args[0], "--write-current",
                     StringComparison.OrdinalIgnoreCase))
@@ -81,6 +99,34 @@ namespace SwiftControl
             {
                 Console.Error.WriteLine(exception.ToString());
                 return 1;
+            }
+        }
+
+        private static void ProbeLighting(bool blink)
+        {
+            using (AcerLightingClient lighting = new AcerLightingClient())
+            {
+                lighting.Connect();
+                int[] devices = lighting.GetDevices();
+                Console.WriteLine("Acer lighting: port {0}; devices [{1}]",
+                    lighting.Port, String.Join(",", devices));
+                foreach (int device in devices)
+                {
+                    Console.WriteLine("Lighting device {0}: {1}", device,
+                        lighting.GetEnabled(device) ? "enabled" : "disabled");
+                }
+
+                if (!blink) return;
+                try
+                {
+                    lighting.PlayEffect(AcerLightingEffects.Blink);
+                    Thread.Sleep(1500);
+                }
+                finally
+                {
+                    lighting.TerminateEffect();
+                }
+                Console.WriteLine("Acer touchpad Blink effect verified and terminated.");
             }
         }
 
@@ -153,6 +199,38 @@ namespace SwiftControl
             Assert(ModernStandbyNetwork.FormatPolicy(
                 ModernStandbyNetwork.WindowsManaged) == "Managed by Windows",
                 "The automatic standby policy should be shown as Windows-managed.");
+        }
+
+        private static void VerifyLockAfterSuspendPolicy()
+        {
+            Guid adapter = new Guid("11111111-2222-3333-4444-555555555555");
+            WifiConnection home = new WifiConnection(
+                WifiNetwork.StableId(adapter, "Home"), "Home");
+            WifiConnection cafe = new WifiConnection(
+                WifiNetwork.StableId(adapter, "Cafe"), "Cafe");
+            LockAfterSuspendSettings settings = new LockAfterSuspendSettings();
+
+            Assert(!settings.Evaluate(cafe).ShouldLock,
+                "Locking should default to off.");
+            settings.Mode = LockAfterSuspendSettings.SmartMode;
+            Assert(settings.Evaluate(cafe).ShouldLock,
+                "Smart mode should lock on an untrusted Wi-Fi.");
+            Assert(settings.Evaluate(null).ShouldLock,
+                "Smart mode should lock when no Wi-Fi is connected.");
+            settings.SetTrusted(home, true);
+            Assert(!settings.Evaluate(home).ShouldLock,
+                "Smart mode should remain unlocked on trusted Wi-Fi.");
+            Assert(settings.Evaluate(cafe).ShouldLock,
+                "Trust should be scoped to one Wi-Fi profile.");
+            settings.Mode = LockAfterSuspendSettings.AlwaysMode;
+            Assert(settings.Evaluate(home).ShouldLock,
+                "Always should lock even on a trusted Wi-Fi.");
+            settings.Mode = 99;
+            Assert(settings.Mode == LockAfterSuspendSettings.Off,
+                "An invalid persisted mode should fall back to Off.");
+            settings.SetTrusted(home, false);
+            Assert(!settings.IsTrusted(home),
+                "A trusted Wi-Fi should be removable.");
         }
 
         private static void Assert(bool condition, string message)

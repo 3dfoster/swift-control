@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using System.Windows.Threading;
 
 namespace SwiftControl
 {
@@ -13,6 +14,7 @@ namespace SwiftControl
         private readonly Icon[] _modeIcons;
         private readonly ToolStripMenuItem[] _profileItems;
         private readonly ToolStripMenuItem _chargeItem;
+        private readonly DispatcherTimer _leftClickTimer;
         private bool _disposed;
 
         public TrayController(MainWindow window)
@@ -24,6 +26,11 @@ namespace SwiftControl
             _window.ChargingLimitObserved += ChargingLimitObserved;
             _window.ChargingLimitChanged += ChargingLimitChanged;
             _window.OperationFailed += OperationFailed;
+
+            _leftClickTimer = new DispatcherTimer();
+            _leftClickTimer.Interval = TimeSpan.FromMilliseconds(
+                SystemInformation.DoubleClickTime + 50);
+            _leftClickTimer.Tick += LeftClickTimerTick;
 
             ContextMenuStrip menu = new ContextMenuStrip();
             ToolStripMenuItem open = new ToolStripMenuItem("Open SwiftControl");
@@ -60,6 +67,7 @@ namespace SwiftControl
             _notify.Icon = _modeIcons[1];
             _notify.ContextMenuStrip = menu;
             _notify.MouseClick += TrayClicked;
+            _notify.MouseDoubleClick += TrayDoubleClicked;
             _notify.Visible = true;
         }
 
@@ -67,8 +75,24 @@ namespace SwiftControl
         {
             if (e.Button == MouseButtons.Left)
             {
-                _window.CyclePowerProfileFromTray();
+                // Wait out Windows' double-click window so a double-click does
+                // not briefly open the panel before changing the profile.
+                _leftClickTimer.Stop();
+                _leftClickTimer.Start();
             }
+        }
+
+        private void TrayDoubleClicked(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            _leftClickTimer.Stop();
+            _window.CyclePowerProfileFromTray();
+        }
+
+        private void LeftClickTimerTick(object sender, EventArgs e)
+        {
+            _leftClickTimer.Stop();
+            if (!_disposed) _window.ShowFromTray();
         }
 
         private void ProfileMenuClicked(object sender, EventArgs e)
@@ -136,6 +160,8 @@ namespace SwiftControl
         {
             if (_disposed) return;
             _disposed = true;
+            _leftClickTimer.Stop();
+            _leftClickTimer.Tick -= LeftClickTimerTick;
             _window.PowerModeObserved -= ModeObserved;
             _window.PowerProfileObserved -= ProfileObserved;
             _window.ChargingLimitObserved -= ChargingLimitObserved;

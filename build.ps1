@@ -28,16 +28,21 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
     "/reference:$presentationFramework" `
     "/reference:$windowsBase" `
     "/reference:$systemXaml" `
+    "$source\AcerLighting.cs" `
     "$source\AcerProtocol.cs" `
     "$source\AssemblyInfo.cs" `
     "$source\BatteryHibernate.cs" `
     "$source\DashboardReader.cs" `
+    "$source\LightingCoordinator.cs" `
+    "$source\LightingSignals.cs" `
+    "$source\LockAfterSuspend.cs" `
     "$source\MainWindow.cs" `
     "$source\ModeOsdWindow.cs" `
     "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
     "$source\TrayController.cs" `
+    "$source\TouchpadLightingSettings.cs" `
     "$source\WindowsPowerMode.cs" `
     "$source\Program.cs"
 
@@ -52,17 +57,34 @@ if ($LASTEXITCODE -ne 0) {
     /platform:anycpu `
     /main:SwiftControl.SelfTest `
     "/out:$output\SwiftControl.SelfTest.exe" `
+    "$source\AcerLighting.cs" `
     "$source\AcerProtocol.cs" `
     "$source\BatteryHibernate.cs" `
     "$source\DashboardReader.cs" `
+    "$source\LockAfterSuspend.cs" `
     "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
+    "$source\TouchpadLightingSettings.cs" `
     "$source\WindowsPowerMode.cs" `
     "$PSScriptRoot\tools\SelfTest.cs"
 
 if ($LASTEXITCODE -ne 0) {
     throw "Self-test compiler exited with code $LASTEXITCODE."
+}
+
+& $compiler `
+    /nologo `
+    /target:winexe `
+    /optimize+ `
+    /platform:anycpu `
+    /main:SwiftControl.LightingNotify `
+    "/out:$output\SwiftControl.Notify.exe" `
+    "$source\LightingSignals.cs" `
+    "$PSScriptRoot\tools\LightingNotify.cs"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Lighting notifier compiler exited with code $LASTEXITCODE."
 }
 
 Get-Item -LiteralPath "$output\SwiftControl.exe" |

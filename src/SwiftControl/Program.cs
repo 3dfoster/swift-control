@@ -41,7 +41,12 @@ namespace SwiftControl
             RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.Default;
             MainWindow window = new MainWindow();
             TrayController tray = new TrayController(window);
-            app.Exit += delegate { tray.Dispose(); };
+            LightingCoordinator lighting = new LightingCoordinator();
+            app.Exit += delegate
+            {
+                lighting.Dispose();
+                tray.Dispose();
+            };
 
             bool eventCreated;
             using (EventWaitHandle showEvent = new EventWaitHandle(
@@ -60,15 +65,32 @@ namespace SwiftControl
 
                 try
                 {
-                    if (startHidden)
+                    bool codexCreated;
+                    using (EventWaitHandle codexEvent = new EventWaitHandle(
+                        false, EventResetMode.AutoReset,
+                        LightingSignals.CodexComplete, out codexCreated))
                     {
-                        app.MainWindow = window;
-                        app.Startup += delegate { window.StartHidden(); };
-                        app.Run();
-                    }
-                    else
-                    {
-                        app.Run(window);
+                        RegisteredWaitHandle codexRegistration = ThreadPool.RegisterWaitForSingleObject(
+                            codexEvent, delegate { lighting.NotifyCodexComplete(); }, null,
+                            Timeout.Infinite, false);
+
+                        try
+                        {
+                            if (startHidden)
+                            {
+                                app.MainWindow = window;
+                                app.Startup += delegate { window.StartHidden(); };
+                                app.Run();
+                            }
+                            else
+                            {
+                                app.Run(window);
+                            }
+                        }
+                        finally
+                        {
+                            codexRegistration.Unregister(null);
+                        }
                     }
                 }
                 finally

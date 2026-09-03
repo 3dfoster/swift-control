@@ -14,6 +14,12 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
   plugged-in timeout, and restore the previous battery timeout when disabled;
 - disconnect networking during Modern Standby on battery without changing the
   plugged-in policy, restoring the previous battery policy when disabled;
+- optionally lock Windows after suspend or hibernate, either always or only
+  when the current Wi-Fi profile has not been explicitly trusted;
+- communicate with Acer's touchpad activity-indicator service and safely run
+  its installed Blink, Breath, Circle, and Twinkle effects;
+- light the touchpad when a Codex agent turn completes, with a selectable
+  Blink, Breath, Circle, or Twinkle effect;
 - follow mode changes made by AcerSense or the keyboard;
 - automatically choose a paired profile when plugged in, unplugged, or below a
   chosen battery percentage;
@@ -28,11 +34,16 @@ quietly allows up to 90 seconds for Acer's delayed services to become available.
 
 ## Controls
 
+- The panel has separate Battery and Touchpad light tabs. The Touchpad light
+  tab shows Acer's live activity-indicator connection, exposes its global
+  enabled state, and lets Codex completion be enabled, assigned an effect,
+  replayed, or stopped. Choosing an effect previews it immediately, and changes
+  are saved immediately.
 - Choose Battery Saver, Everyday, Responsive, or Maximum in the panel to apply
   both control layers together. Advanced controls expose each layer separately
   and show unmatched combinations as Custom.
-- Left-click the notification-area icon to cycle Battery Saver, Everyday,
-  Responsive, and Maximum.
+- Left-click the notification-area icon to open the panel. Double-click it to
+  cycle Battery Saver, Everyday, Responsive, and Maximum.
 - Right-click it to open the panel, choose any of those paired profiles, change
   the charging limit, or exit SwiftControl. The checked item follows the live
   Acer and Windows combination.
@@ -44,6 +55,11 @@ quietly allows up to 90 seconds for Acer's delayed services to become available.
   profile, or drag the chip onto that profile. A manual change remains active
   until the power condition changes or Resume auto is clicked. Low battery
   clears five percentage points above its entry threshold.
+- Lock after suspend sits above the power-profile automation as a three-position
+  Off / Smart / Always selector. Smart locks after resume on an untrusted Wi-Fi
+  or when no Wi-Fi is connected; use the adjacent button to trust or forget the
+  current Windows Wi-Fi profile. The decision is captured before suspend, when
+  the network is still available.
 - Charge-limit changes show a confirmation notification; failed operations show
   an error notification.
 - Advanced controls includes a Hibernate on battery toggle. Its status line
@@ -69,6 +85,8 @@ commands and supported modes may differ on other models.
 - [Acer and Windows power-mode findings](docs/POWER-MODE-FINDINGS.md) records
   the measured firmware limits, benchmark matrices, control-layer behavior,
   testing pitfalls, and remaining unknowns for the SF16-51T.
+- [Touchpad lighting protocol](docs/TOUCHPAD-LIGHTING.md) records the authorized
+  loopback framing, device mapping, built-in effects, and diagnostic commands.
 
 ## Build
 
@@ -81,12 +99,18 @@ Run:
 The result is `bin\SwiftControl.exe`. No SDK or package restore is required.
 Generated binaries under `bin` are intentionally excluded from version control.
 
+`bin\SwiftControl.Notify.exe` is the tiny local signal helper used by Codex's
+supported external `notify` setting. It sends no network traffic and exits
+immediately.
+
 ## Protocol notes
 
 The app interoperates with the same loopback-only services used by AcerSense:
 
 - Care Center: `wss://localhost:4343`
 - Quick Access: `wss://localhost:5141`
+- Acer Lighting Component: `ws://localhost:55995` on this machine (the client
+  probes Acer's documented port ranges because the active port can vary)
 
 `BatteryHealthy` value `0` is optimized charging (about 80%); value `1` is
 full charging. Every change is read back and verified before the UI reports
