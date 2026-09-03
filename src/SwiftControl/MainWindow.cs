@@ -38,8 +38,13 @@ namespace SwiftControl
         private const int DwmWindowCornerRound = 2;
         private const int StartupServiceWaitSeconds = 90;
         private const int StartupServiceRetrySeconds = 3;
+        // Windows 11 can leave an auto-hidden taskbar visible while still
+        // reporting the full monitor as usable. Always reserve its normal
+        // height so the flyout cannot be covered during that transition.
+        private const double TaskbarReserve = 48;
 
         private readonly Brush _background = Brush("#0B0E14");
+        private readonly Brush _pageSurface = Brush("#11161E");
         private readonly Brush _card = Brush("#151A22");
         private readonly Brush _cardBorder = Brush("#252C38");
         private readonly Brush _text = Brush("#F4F6F8");
@@ -258,11 +263,11 @@ namespace SwiftControl
 
             Border tabChrome = new Border();
             tabChrome.Margin = new Thickness(0, 13, 0, 0);
-            tabChrome.Padding = new Thickness(3);
-            tabChrome.Background = Brush("#11161E");
+            tabChrome.Padding = new Thickness(2, 2, 2, 0);
+            tabChrome.Background = _background;
             tabChrome.BorderBrush = _cardBorder;
             tabChrome.BorderThickness = new Thickness(1);
-            tabChrome.CornerRadius = new CornerRadius(11);
+            tabChrome.CornerRadius = new CornerRadius(9, 9, 0, 0);
             UniformGrid tabs = new UniformGrid { Rows = 1 };
             _batteryTab = CreatePanelTab("Battery", "battery");
             _touchpadTab = CreatePanelTab("Touchpad light", "touchpad");
@@ -275,7 +280,7 @@ namespace SwiftControl
             ScrollViewer bodyScroll = new ScrollViewer();
             bodyScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
             bodyScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            bodyScroll.Margin = new Thickness(0, 10, 0, 0);
+            bodyScroll.Margin = new Thickness(0);
             Grid.SetRow(bodyScroll, 2);
             root.Children.Add(bodyScroll);
 
@@ -283,12 +288,14 @@ namespace SwiftControl
             body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             bodyScroll.Content = body;
 
-            StackPanel batteryPage = new StackPanel();
+            Border batteryPage = TabPageSurface();
             _batteryPage = batteryPage;
+            StackPanel batteryPageContent = new StackPanel();
+            batteryPage.Child = batteryPageContent;
             Border batteryCard = Card();
             StackPanel battery = new StackPanel();
             batteryCard.Child = battery;
-            batteryPage.Children.Add(batteryCard);
+            batteryPageContent.Children.Add(batteryCard);
 
             Grid batteryHeader = new Grid();
             batteryHeader.ColumnDefinitions.Add(new ColumnDefinition());
@@ -336,7 +343,7 @@ namespace SwiftControl
             lockCard.Margin = new Thickness(0, 8, 0, 0);
             StackPanel lockSection = new StackPanel();
             lockCard.Child = lockSection;
-            batteryPage.Children.Add(lockCard);
+            batteryPageContent.Children.Add(lockCard);
             battery = lockSection;
 
             Grid lockHeader = new Grid();
@@ -398,7 +405,7 @@ namespace SwiftControl
             profileCard.Margin = new Thickness(0, 8, 0, 0);
             StackPanel profileSection = new StackPanel();
             profileCard.Child = profileSection;
-            batteryPage.Children.Add(profileCard);
+            batteryPageContent.Children.Add(profileCard);
             battery = profileSection;
 
             Grid profileHeader = new Grid();
@@ -740,13 +747,14 @@ namespace SwiftControl
             ToggleButton button = new ToggleButton();
             button.Content = label;
             button.Tag = tag;
-            button.Height = 34;
-            button.Margin = new Thickness(2);
+            button.Height = 40;
+            button.Margin = new Thickness(0);
+            button.Padding = new Thickness(10, 0, 10, 2);
             button.FontSize = 12;
             button.FontWeight = FontWeights.SemiBold;
-            button.BorderThickness = new Thickness(1);
+            button.BorderThickness = new Thickness(0);
             button.Cursor = Cursors.Hand;
-            button.Template = CreateToggleButtonTemplate(8);
+            button.Template = CreatePanelTabTemplate();
             button.Click += PanelTabClicked;
             return button;
         }
@@ -776,14 +784,16 @@ namespace SwiftControl
         {
             if (button == null) return;
             button.IsChecked = selected;
-            button.Background = selected ? _accent : Brushes.Transparent;
-            button.Foreground = selected ? _background : _muted;
+            button.Background = selected ? _pageSurface : Brushes.Transparent;
+            button.Foreground = selected ? _accent : _muted;
             button.BorderBrush = selected ? _accent : Brushes.Transparent;
         }
 
         private Border BuildTouchpadPage()
         {
+            Border page = TabPageSurface();
             Border card = Card();
+            page.Child = card;
             StackPanel panel = new StackPanel();
             card.Child = panel;
 
@@ -832,7 +842,7 @@ namespace SwiftControl
             panel.Children.Add(previews);
 
             UpdateLightingSettingsVisuals();
-            return card;
+            return page;
         }
 
         private Grid CreateLightingSectionHeader(
@@ -1573,8 +1583,10 @@ namespace SwiftControl
 
             uint dpi = DpiForMonitor(monitor, handle);
             double pixelsPerDip = dpi / 96.0;
-            double areaWidth = (monitorInfo.Work.Right - monitorInfo.Work.Left) / pixelsPerDip;
-            double areaHeight = (monitorInfo.Work.Bottom - monitorInfo.Work.Top) / pixelsPerDip;
+            double areaWidth = (monitorInfo.Monitor.Right - monitorInfo.Monitor.Left) / pixelsPerDip;
+            double areaHeight =
+                (monitorInfo.Monitor.Bottom - monitorInfo.Monitor.Top) / pixelsPerDip -
+                TaskbarReserve;
 
             _positioning = true;
             try
@@ -1594,8 +1606,9 @@ namespace SwiftControl
                 int width = Math.Max(1, (int)Math.Round(ActualWidth * pixelsPerDip));
                 int height = Math.Max(1, (int)Math.Round(ActualHeight * pixelsPerDip));
                 int padding = Math.Max(1, (int)Math.Round(edgePadding * pixelsPerDip));
-                int left = monitorInfo.Work.Right - width - padding;
-                int top = monitorInfo.Work.Bottom - height - padding;
+                int taskbarReserve = (int)Math.Round(TaskbarReserve * pixelsPerDip);
+                int left = monitorInfo.Monitor.Right - width - padding;
+                int top = monitorInfo.Monitor.Bottom - taskbarReserve - height - padding;
 
                 // SetWindowPos consumes physical desktop coordinates. This avoids
                 // WPF interpreting Left and Top through the previous monitor's DPI
@@ -3105,6 +3118,17 @@ namespace SwiftControl
             return border;
         }
 
+        private Border TabPageSurface()
+        {
+            Border page = new Border();
+            page.Background = _pageSurface;
+            page.BorderBrush = _cardBorder;
+            page.BorderThickness = new Thickness(1, 0, 1, 1);
+            page.CornerRadius = new CornerRadius(0, 0, 13, 13);
+            page.Padding = new Thickness(10);
+            return page;
+        }
+
         private Button Button(string content)
         {
             Button button = new Button();
@@ -3203,6 +3227,63 @@ namespace SwiftControl
             pressedOpacity.Property = UIElement.OpacityProperty;
             pressedOpacity.Value = 0.68;
             pressedOpacity.TargetName = "ToggleChrome";
+            pressed.Setters.Add(pressedOpacity);
+            template.Triggers.Add(pressed);
+
+            return template;
+        }
+
+        private static ControlTemplate CreatePanelTabTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(ToggleButton));
+            FrameworkElementFactory layout = new FrameworkElementFactory(typeof(Grid));
+
+            FrameworkElementFactory chrome = new FrameworkElementFactory(typeof(Border));
+            chrome.Name = "TabChrome";
+            chrome.SetValue(Border.CornerRadiusProperty, new CornerRadius(7, 7, 0, 0));
+            chrome.SetValue(Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+
+            FrameworkElementFactory presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(ContentPresenter.ContentProperty,
+                new TemplateBindingExtension(ContentControl.ContentProperty));
+            presenter.SetValue(FrameworkElement.MarginProperty,
+                new TemplateBindingExtension(Control.PaddingProperty));
+            presenter.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            presenter.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+            chrome.AppendChild(presenter);
+            layout.AppendChild(chrome);
+
+            FrameworkElementFactory indicator = new FrameworkElementFactory(typeof(Border));
+            indicator.Name = "TabIndicator";
+            indicator.SetValue(FrameworkElement.HeightProperty, 3.0);
+            indicator.SetValue(FrameworkElement.MarginProperty, new Thickness(12, 0, 12, 0));
+            indicator.SetValue(FrameworkElement.HorizontalAlignmentProperty,
+                HorizontalAlignment.Stretch);
+            indicator.SetValue(FrameworkElement.VerticalAlignmentProperty,
+                VerticalAlignment.Bottom);
+            indicator.SetValue(Border.CornerRadiusProperty, new CornerRadius(2, 2, 0, 0));
+            indicator.SetValue(Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+            layout.AppendChild(indicator);
+            template.VisualTree = layout;
+
+            MultiTrigger hover = new MultiTrigger();
+            hover.Conditions.Add(new Condition(IsMouseOverProperty, true));
+            hover.Conditions.Add(new Condition(ToggleButton.IsCheckedProperty, false));
+            Setter hoverBackground = new Setter();
+            hoverBackground.Property = Border.BackgroundProperty;
+            hoverBackground.Value = Brush("#202833");
+            hoverBackground.TargetName = "TabChrome";
+            hover.Setters.Add(hoverBackground);
+            template.Triggers.Add(hover);
+
+            Trigger pressed = new Trigger();
+            pressed.Property = ButtonBase.IsPressedProperty;
+            pressed.Value = true;
+            Setter pressedOpacity = new Setter();
+            pressedOpacity.Property = UIElement.OpacityProperty;
+            pressedOpacity.Value = 0.7;
             pressed.Setters.Add(pressedOpacity);
             template.Triggers.Add(pressed);
 
