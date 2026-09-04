@@ -16,6 +16,8 @@ A compact Windows 11 utility for the useful hardware controls on an Acer Swift:
   plugged-in policy, restoring the previous battery policy when disabled;
 - optionally lock Windows after suspend or hibernate, either always or only
   when the current Wi-Fi profile has not been explicitly trusted;
+- optionally sleep after the lid has remained closed on battery for 0, 15, 30,
+  60, or 90 minutes, canceling the countdown when the lid is reopened;
 - communicate with Acer's touchpad activity-indicator service and safely run
   its installed Blink, Breath, Circle, and Twinkle effects;
 - light the touchpad when a Codex agent turn completes, with a selectable
@@ -60,6 +62,11 @@ quietly allows up to 90 seconds for Acer's delayed services to become available.
   or when no Wi-Fi is connected; use the adjacent button to trust or forget the
   current Windows Wi-Fi profile. The decision is captured before suspend, when
   the network is still available.
+- Sleep on Lid delays battery sleep until the selected lid-closed interval has
+  elapsed. Reopening the lid cancels the timer. SwiftControl sets the Windows
+  battery lid action to Do nothing while this feature is enabled and restores
+  its previous action when disabled. Plugged-in lid close and idle sleep are
+  always disabled so AC sleep remains an explicit user action.
 - Charge-limit changes show a confirmation notification; failed operations show
   an error notification.
 - Advanced controls includes a Hibernate on battery toggle. Its status line

@@ -41,6 +41,7 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
     "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
+    "$source\SleepOnLid.cs" `
     "$source\TrayController.cs" `
     "$source\TrustedWifiWindow.cs" `
     "$source\TouchpadLightingSettings.cs" `
@@ -66,6 +67,7 @@ if ($LASTEXITCODE -ne 0) {
     "$source\ModernStandbyNetwork.cs" `
     "$source\PowerAutomation.cs" `
     "$source\PowerProfiles.cs" `
+    "$source\SleepOnLid.cs" `
     "$source\TouchpadLightingSettings.cs" `
     "$source\WindowsPowerMode.cs" `
     "$PSScriptRoot\tools\SelfTest.cs"

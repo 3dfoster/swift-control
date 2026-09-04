@@ -32,6 +32,10 @@ namespace SwiftControl
         private const int PbtApmSuspend = 0x0004;
         private const int PbtApmResumeSuspend = 0x0007;
         private const int PbtApmResumeAutomatic = 0x0012;
+        private const int PbtPowerSettingChange = 0x8013;
+        private const int DeviceNotifyWindowHandle = 0;
+        private static readonly Guid LidSwitchStateChange = new Guid(
+            "ba3e0f4d-b817-4094-a2d1-d56379e6a0f3");
         private const uint SwpNoZOrder = 0x0004;
         private const uint SwpNoActivate = 0x0010;
         private const int DwmWindowCornerPreference = 33;
@@ -68,6 +72,9 @@ namespace SwiftControl
         private Button _trustCurrentWifi;
         private Button _manageTrustedWifi;
         private TextBlock _lockAfterSuspendStatus;
+        private ToggleButton _sleepOnLid;
+        private ComboBox _sleepOnLidDelay;
+        private TextBlock _sleepOnLidStatus;
         private ToggleButton _batteryTab;
         private ToggleButton _touchpadTab;
         private FrameworkElement _batteryPage;
@@ -95,6 +102,7 @@ namespace SwiftControl
         private readonly PowerAutomationSettings _automationSettings;
         private readonly TouchpadLightingSettings _lightingSettings;
         private readonly LockAfterSuspendSettings _lockSettings;
+        private readonly SleepOnLidSettings _sleepOnLidSettings;
         private WifiConnection _currentWifi;
         private bool _lockOnNextResume;
         private bool _hasLockDecisionForNextResume;
@@ -109,6 +117,11 @@ namespace SwiftControl
         private bool _optimizedCharging;
         private readonly DispatcherTimer _modePoll;
         private readonly DispatcherTimer _dashboardPoll;
+        private readonly DispatcherTimer _lidSleepTimer;
+        private DateTime _lidSleepDeadline;
+        private bool _lidStateKnown;
+        private bool _lidClosed;
+        private bool _sleepPolicyApplied;
         private bool _loading;
         private bool _pollingMode;
         private bool _allowClose;
@@ -131,6 +144,7 @@ namespace SwiftControl
         private IntPtr _targetMonitor;
         private HwndSource _windowSource;
         private IntPtr _suspendResumeRegistration;
+        private IntPtr _lidSwitchRegistration;
         private bool _suppressMonitorTracking;
         private bool _focusDismissQueued;
         private bool _openingTrustedWifiWindow;
@@ -147,6 +161,7 @@ namespace SwiftControl
             _automationSettings = PowerAutomationSettings.Load();
             _lightingSettings = TouchpadLightingSettings.Load();
             _lockSettings = LockAfterSuspendSettings.Load();
+            _sleepOnLidSettings = SleepOnLidSettings.Load();
             Title = "SwiftControl";
             MinWidth = 320;
             MinHeight = 240;
@@ -170,6 +185,10 @@ namespace SwiftControl
             _dashboardPoll = new DispatcherTimer();
             _dashboardPoll.Interval = TimeSpan.FromSeconds(30);
             _dashboardPoll.Tick += DashboardPollTick;
+
+            _lidSleepTimer = new DispatcherTimer();
+            _lidSleepTimer.Interval = TimeSpan.FromSeconds(1);
+            _lidSleepTimer.Tick += LidSleepTimerTick;
 
             Content = BuildLayout();
             Loaded += OnLoaded;
@@ -419,6 +438,76 @@ namespace SwiftControl
             _lockAfterSuspendStatus.Margin = new Thickness(0, 5, 0, 0);
             _lockAfterSuspendStatus.TextWrapping = TextWrapping.Wrap;
             battery.Children.Add(_lockAfterSuspendStatus);
+
+            Border sleepOnLidCard = Card();
+            sleepOnLidCard.Margin = new Thickness(0, 8, 0, 0);
+            StackPanel sleepOnLidSection = new StackPanel();
+            sleepOnLidCard.Child = sleepOnLidSection;
+            batteryPageContent.Children.Add(sleepOnLidCard);
+
+            Grid sleepOnLidHeader = new Grid();
+            sleepOnLidHeader.ColumnDefinitions.Add(new ColumnDefinition());
+            sleepOnLidHeader.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock sleepOnLidHeading = Text(
+                "SLEEP ON LID", 11, FontWeights.SemiBold, _muted);
+            sleepOnLidHeading.VerticalAlignment = VerticalAlignment.Center;
+            sleepOnLidHeader.Children.Add(sleepOnLidHeading);
+
+            _sleepOnLid = new ToggleButton();
+            _sleepOnLid.Content = "Enabled";
+            _sleepOnLid.Height = 29;
+            _sleepOnLid.Padding = new Thickness(10, 0, 10, 1);
+            _sleepOnLid.FontSize = 11;
+            _sleepOnLid.FontWeight = FontWeights.SemiBold;
+            _sleepOnLid.BorderThickness = new Thickness(1);
+            _sleepOnLid.Cursor = Cursors.Hand;
+            _sleepOnLid.Template = CreateToggleButtonTemplate(9);
+            _sleepOnLid.Click += SleepOnLidClicked;
+            Grid.SetColumn(_sleepOnLid, 1);
+            sleepOnLidHeader.Children.Add(_sleepOnLid);
+            sleepOnLidSection.Children.Add(sleepOnLidHeader);
+
+            StackPanel sleepAfterRow = new StackPanel();
+            sleepAfterRow.Orientation = Orientation.Horizontal;
+            sleepAfterRow.Margin = new Thickness(0, 8, 0, 0);
+            TextBlock sleepAfterLabel = Text(
+                "Sleep after", 11, FontWeights.Medium, _text);
+            sleepAfterLabel.VerticalAlignment = VerticalAlignment.Center;
+            sleepAfterRow.Children.Add(sleepAfterLabel);
+            _sleepOnLidDelay = new ComboBox();
+            _sleepOnLidDelay.Width = 112;
+            _sleepOnLidDelay.Height = 29;
+            _sleepOnLidDelay.Margin = new Thickness(9, 0, 0, 0);
+            _sleepOnLidDelay.Padding = new Thickness(7, 2, 4, 2);
+            _sleepOnLidDelay.FontSize = 11;
+            // Windows draws the closed native ComboBox selection on a light
+            // system surface even when Background is set. Use dark text there;
+            // each drop-down item keeps its explicit light-on-dark colors.
+            _sleepOnLidDelay.Foreground = _background;
+            _sleepOnLidDelay.Background = Brush("#202733");
+            _sleepOnLidDelay.BorderBrush = _cardBorder;
+            int[] lidDelays = { 0, 15, 30, 60, 90 };
+            for (int index = 0; index < lidDelays.Length; index++)
+            {
+                ComboBoxItem item = new ComboBoxItem();
+                item.Content = SleepOnLidSettings.FormatDelay(lidDelays[index]);
+                item.Tag = lidDelays[index];
+                item.Foreground = _text;
+                item.Background = Brush("#202733");
+                _sleepOnLidDelay.Items.Add(item);
+                if (lidDelays[index] == _sleepOnLidSettings.DelayMinutes)
+                    _sleepOnLidDelay.SelectedIndex = index;
+            }
+            _sleepOnLidDelay.SelectionChanged += SleepOnLidDelayChanged;
+            sleepAfterRow.Children.Add(_sleepOnLidDelay);
+            sleepOnLidSection.Children.Add(sleepAfterRow);
+
+            _sleepOnLidStatus = Text("", 10, FontWeights.Normal, _muted);
+            _sleepOnLidStatus.Margin = new Thickness(0, 5, 0, 0);
+            _sleepOnLidStatus.TextWrapping = TextWrapping.Wrap;
+            sleepOnLidSection.Children.Add(_sleepOnLidStatus);
+            RefreshSleepOnLidDisplay();
 
             Border profileCard = Card();
             profileCard.Margin = new Thickness(0, 8, 0, 0);
@@ -1248,6 +1337,7 @@ namespace SwiftControl
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
+            ApplySleepOnLidPolicyOnce();
             SelectMonitorAtCursor();
             UpdateLayout();
             PositionBottomRight();
@@ -1279,6 +1369,7 @@ namespace SwiftControl
             // Create the invisible top-level HWND so registered Modern Standby
             // notifications work even if the panel is never opened.
             new WindowInteropHelper(this).EnsureHandle();
+            ApplySleepOnLidPolicyOnce();
             RefreshStartupDisplay();
             _modePoll.Interval = TimeSpan.FromSeconds(30);
             DateTime deadline = DateTime.UtcNow.AddSeconds(StartupServiceWaitSeconds);
@@ -1419,6 +1510,7 @@ namespace SwiftControl
                 return;
             }
             if (e.Mode != PowerModes.StatusChange) return;
+            RefreshLidSleepForPowerChange();
             try
             {
                 Dispatcher.BeginInvoke(new Action(delegate
@@ -1438,6 +1530,168 @@ namespace SwiftControl
             if (_hasLockDecisionForNextResume) return;
             _lockOnNextResume = _lockSettings.EvaluateCurrent().ShouldLock;
             _hasLockDecisionForNextResume = true;
+        }
+
+        private void SleepOnLidClicked(object sender, RoutedEventArgs e)
+        {
+            bool enabled = _sleepOnLid.IsChecked == true;
+            bool previous = _sleepOnLidSettings.Enabled;
+            try
+            {
+                _sleepOnLidSettings.Enabled = enabled;
+                _sleepOnLidSettings.Save();
+                SleepOnLidPolicy.Apply(enabled);
+                _sleepPolicyApplied = true;
+                if (!enabled) CancelLidSleep();
+                else RefreshLidSleepForPowerChange();
+            }
+            catch (Exception exception)
+            {
+                _sleepOnLidSettings.Enabled = previous;
+                try { _sleepOnLidSettings.Save(); } catch { }
+                ReportFailure("Could not change Sleep on Lid: " + exception.Message);
+            }
+            RefreshSleepOnLidDisplay();
+        }
+
+        private void SleepOnLidDelayChanged(object sender, SelectionChangedEventArgs e)
+        {
+            ComboBoxItem item = _sleepOnLidDelay.SelectedItem as ComboBoxItem;
+            if (item == null) return;
+            _sleepOnLidSettings.DelayMinutes = Convert.ToInt32(
+                item.Tag, CultureInfo.InvariantCulture);
+            try { _sleepOnLidSettings.Save(); }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not save Sleep on Lid: " + exception.Message);
+            }
+            if (_lidSleepTimer.IsEnabled) StartLidSleepCountdown(false);
+            RefreshSleepOnLidDisplay();
+        }
+
+        private void HandleLidState(bool closed)
+        {
+            bool wasKnown = _lidStateKnown;
+            bool changed = !wasKnown || _lidClosed != closed;
+            _lidStateKnown = true;
+            _lidClosed = closed;
+            if (!closed || !_sleepOnLidSettings.Enabled)
+            {
+                CancelLidSleep();
+                return;
+            }
+            // Registration can immediately report an already-closed lid. Only
+            // an actual open-to-closed transition may request immediate sleep.
+            if (changed && wasKnown && IsOnBattery()) StartLidSleepCountdown(true);
+            else RefreshSleepOnLidDisplay();
+        }
+
+        private void RefreshLidSleepForPowerChange()
+        {
+            if (!_sleepOnLidSettings.Enabled || !_lidClosed || !IsOnBattery())
+            {
+                CancelLidSleep();
+                return;
+            }
+            if (!_lidSleepTimer.IsEnabled) StartLidSleepCountdown(false);
+        }
+
+        private void StartLidSleepCountdown(bool allowImmediate)
+        {
+            _lidSleepTimer.Stop();
+            int minutes = _sleepOnLidSettings.DelayMinutes;
+            if (minutes == 0)
+            {
+                RefreshSleepOnLidDisplay();
+                if (allowImmediate)
+                    Dispatcher.BeginInvoke(new Action(RequestLidSleep));
+                return;
+            }
+            _lidSleepDeadline = DateTime.UtcNow.AddMinutes(minutes);
+            _lidSleepTimer.Start();
+            RefreshSleepOnLidDisplay();
+        }
+
+        private void CancelLidSleep()
+        {
+            _lidSleepTimer.Stop();
+            RefreshSleepOnLidDisplay();
+        }
+
+        private void LidSleepTimerTick(object sender, EventArgs e)
+        {
+            if (!_lidClosed || !IsOnBattery() || !_sleepOnLidSettings.Enabled)
+            {
+                CancelLidSleep();
+                return;
+            }
+            if (DateTime.UtcNow < _lidSleepDeadline)
+            {
+                RefreshSleepOnLidDisplay();
+                return;
+            }
+            _lidSleepTimer.Stop();
+            RequestLidSleep();
+        }
+
+        private void RequestLidSleep()
+        {
+            if (!_lidClosed || !IsOnBattery() || !_sleepOnLidSettings.Enabled) return;
+            if (!SetSuspendState(false, false, false))
+                ReportFailure("Windows refused the Sleep on Lid request.");
+        }
+
+        private void RefreshSleepOnLidDisplay()
+        {
+            if (_sleepOnLid == null || _sleepOnLidStatus == null) return;
+            bool enabled = _sleepOnLidSettings.Enabled;
+            _sleepOnLid.IsChecked = enabled;
+            _sleepOnLid.Background = enabled ? _accent : Brush("#202733");
+            _sleepOnLid.Foreground = enabled ? _background : _text;
+            _sleepOnLid.BorderBrush = enabled ? _accent : _cardBorder;
+            if (_sleepOnLidDelay != null) _sleepOnLidDelay.IsEnabled = enabled;
+
+            if (!enabled)
+                _sleepOnLidStatus.Text =
+                    "Off. Plugged-in lid close and idle sleep remain disabled.";
+            else if (!IsOnBattery())
+                _sleepOnLidStatus.Text =
+                    "Plugged in: lid close does nothing and automatic sleep is disabled.";
+            else if (!_lidStateKnown)
+                _sleepOnLidStatus.Text = "Waiting for the Windows lid sensor…";
+            else if (!_lidClosed)
+                _sleepOnLidStatus.Text = "On battery: close the lid to start the timer.";
+            else if (_lidSleepTimer.IsEnabled)
+            {
+                TimeSpan remaining = _lidSleepDeadline - DateTime.UtcNow;
+                int seconds = Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds));
+                _sleepOnLidStatus.Text = "Lid closed: sleeping in " +
+                    (seconds / 60).ToString(CultureInfo.InvariantCulture) + ":" +
+                    (seconds % 60).ToString("00", CultureInfo.InvariantCulture) + ".";
+            }
+            else
+                _sleepOnLidStatus.Text = "Lid closed; reopen and close it to start the timer.";
+        }
+
+        private void ApplySleepOnLidPolicyOnce()
+        {
+            if (_sleepPolicyApplied) return;
+            try
+            {
+                SleepOnLidPolicy.Apply(_sleepOnLidSettings.Enabled);
+                _sleepPolicyApplied = true;
+            }
+            catch (Exception exception)
+            {
+                ReportFailure("Could not apply Sleep on Lid policy: " + exception.Message);
+            }
+            RefreshSleepOnLidDisplay();
+        }
+
+        private static bool IsOnBattery()
+        {
+            SystemPowerStatus status;
+            return GetSystemPowerStatus(out status) && status.AcLineStatus == 0;
         }
 
         private void ApplyLockAfterResume()
@@ -1532,6 +1786,7 @@ namespace SwiftControl
             }
             _modePoll.Stop();
             _dashboardPoll.Stop();
+            _lidSleepTimer.Stop();
             CloseTrustedWifiManager();
             SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
             base.OnClosing(e);
@@ -1556,6 +1811,9 @@ namespace SwiftControl
             {
                 PowerRegisterSuspendResumeNotification(
                     handle, 0, out _suspendResumeRegistration);
+                Guid lidSetting = LidSwitchStateChange;
+                _lidSwitchRegistration = RegisterPowerSettingNotification(
+                    handle, ref lidSetting, DeviceNotifyWindowHandle);
             }
             catch (DllNotFoundException) { }
             catch (EntryPointNotFoundException) { }
@@ -1578,6 +1836,11 @@ namespace SwiftControl
                 catch (DllNotFoundException) { }
                 catch (EntryPointNotFoundException) { }
                 _suspendResumeRegistration = IntPtr.Zero;
+            }
+            if (_lidSwitchRegistration != IntPtr.Zero)
+            {
+                UnregisterPowerSettingNotification(_lidSwitchRegistration);
+                _lidSwitchRegistration = IntPtr.Zero;
             }
             base.OnClosed(e);
         }
@@ -1603,6 +1866,14 @@ namespace SwiftControl
                 else if (powerEvent == PbtApmResumeSuspend ||
                     powerEvent == PbtApmResumeAutomatic)
                     ApplyLockAfterResume();
+                else if (powerEvent == PbtPowerSettingChange &&
+                    lParam != IntPtr.Zero && Marshal.ReadInt32(lParam, 16) >= 1)
+                {
+                    Guid setting = (Guid)Marshal.PtrToStructure(
+                        lParam, typeof(Guid));
+                    if (setting == LidSwitchStateChange)
+                        HandleLidState(Marshal.ReadByte(lParam, 20) == 0);
+                }
             }
             return IntPtr.Zero;
         }
@@ -1726,6 +1997,17 @@ namespace SwiftControl
             public int Flags;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SystemPowerStatus
+        {
+            public byte AcLineStatus;
+            public byte BatteryFlag;
+            public byte BatteryLifePercent;
+            public byte SystemStatusFlag;
+            public uint BatteryLifeTime;
+            public uint BatteryFullLifeTime;
+        }
+
         [DllImport("user32.dll")]
         private static extern bool GetCursorPos(out NativePoint point);
 
@@ -1761,6 +2043,21 @@ namespace SwiftControl
 
         [DllImport("user32.dll")]
         private static extern bool LockWorkStation();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr RegisterPowerSettingNotification(
+            IntPtr recipient, ref Guid powerSettingGuid, int flags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UnregisterPowerSettingNotification(
+            IntPtr registrationHandle);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
+
+        [DllImport("powrprof.dll", SetLastError = true)]
+        private static extern bool SetSuspendState(
+            bool hibernate, bool forceCritical, bool disableWakeEvent);
 
         [DllImport("powrprof.dll")]
         private static extern uint PowerRegisterSuspendResumeNotification(
@@ -3192,6 +3489,9 @@ namespace SwiftControl
                 _trustCurrentWifi.IsEnabled = enabled && _currentWifi != null;
             if (_manageTrustedWifi != null)
                 _manageTrustedWifi.IsEnabled = enabled;
+            if (_sleepOnLid != null) _sleepOnLid.IsEnabled = enabled;
+            if (_sleepOnLidDelay != null)
+                _sleepOnLidDelay.IsEnabled = enabled && _sleepOnLidSettings.Enabled;
             if (_powerModes == null) return;
             foreach (UIElement element in _powerModes.Children)
             {

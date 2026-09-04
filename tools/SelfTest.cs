@@ -24,6 +24,8 @@ namespace SwiftControl
                 Console.WriteLine("Modern Standby network-policy formatting verified.");
                 VerifyLockAfterSuspendPolicy();
                 Console.WriteLine("Lock-after-suspend policy verified.");
+                VerifySleepOnLidSettings();
+                Console.WriteLine("Sleep-on-lid settings verified.");
                 WifiConnection wifi = WifiNetwork.Current();
                 Console.WriteLine("Wi-Fi: {0}",
                     wifi == null ? "not connected" : wifi.Name);
@@ -231,6 +233,20 @@ namespace SwiftControl
             settings.SetTrusted(home, false);
             Assert(!settings.IsTrusted(home),
                 "A trusted Wi-Fi should be removable.");
+        }
+
+        private static void VerifySleepOnLidSettings()
+        {
+            int[] valid = { 0, 15, 30, 60, 90 };
+            foreach (int delay in valid)
+                Assert(SleepOnLidSettings.ValidDelay(delay) == delay,
+                    "A supported lid-sleep delay should remain unchanged.");
+            Assert(SleepOnLidSettings.ValidDelay(12) == 15,
+                "An unsupported lid-sleep delay should fall back to 15 minutes.");
+            Assert(SleepOnLidSettings.FormatDelay(0) == "Immediately",
+                "The zero-minute delay should be labeled Immediately.");
+            Assert(SleepOnLidSettings.FormatDelay(60) == "60 min",
+                "Minute delays should use the compact label.");
         }
 
         private static void Assert(bool condition, string message)
