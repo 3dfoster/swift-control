@@ -97,6 +97,7 @@ namespace SwiftControl
         private readonly LockAfterSuspendSettings _lockSettings;
         private WifiConnection _currentWifi;
         private bool _lockOnNextResume;
+        private bool _hasLockDecisionForNextResume;
         private int _currentPowerMode = -1;
         private int _currentWindowsPowerMode = -1;
         private int _lastAutomationCondition = -1;
@@ -1430,13 +1431,22 @@ namespace SwiftControl
 
         private void CaptureLockAfterSuspendDecision()
         {
+            // Windows can deliver the same suspend through both SystemEvents and
+            // WM_POWERBROADCAST.  Keep the first decision: a later duplicate can
+            // arrive after standby has already disconnected Wi-Fi and must not
+            // turn a trusted-network decision into a lock.
+            if (_hasLockDecisionForNextResume) return;
             _lockOnNextResume = _lockSettings.EvaluateCurrent().ShouldLock;
+            _hasLockDecisionForNextResume = true;
         }
 
         private void ApplyLockAfterResume()
         {
+            // Resume is likewise reported through both notification paths.
+            if (!_hasLockDecisionForNextResume) return;
             bool shouldLock = _lockOnNextResume;
             _lockOnNextResume = false;
+            _hasLockDecisionForNextResume = false;
             if (!shouldLock) return;
             try { LockWorkStation(); }
             catch { }
